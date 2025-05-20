@@ -218,7 +218,7 @@
             const progressInterval = animateProgressBar();
             
             try {
-                const response = await fetch('/api/query-sim', {
+                const response = await fetch('YOUR_RENDER_URL/api/query-sim', { // 替換為您的 Render URL，例如 https://sim-query.onrender.com
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',

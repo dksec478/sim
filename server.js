@@ -12,7 +12,7 @@ const fs = require('fs');
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000; // 使用 Render 的動態端口
 
 app.use(cors());
 app.use(express.json());
@@ -128,8 +128,9 @@ app.post('/api/query-sim', async (req, res) => {
     try {
         browser = await puppeteer.launch({ 
             headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox'],
-            timeout: 60000
+            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+            timeout: 60000,
+            userDataDir: '/opt/render/.cache/puppeteer' // Render 特定的快取路徑
         });
         
         page = await browser.newPage();
@@ -189,7 +190,6 @@ app.post('/api/query-sim', async (req, res) => {
             timeout: 60000 
         });
 
-        // 檢查響應狀態
         if (response.status() === 500) {
             console.error('Server returned 500 error, clearing session...');
             logToFile('Server returned 500 error, clearing session...');
@@ -300,7 +300,6 @@ app.post('/api/query-sim', async (req, res) => {
         console.error('Query failed:', error.message);
         logToFile(`Query failed: ${error.message}`);
         
-        // 清理無效會話
         if (error.message.includes('Invalid ICCID') || error.message.includes('No data found') || 
             error.message.includes('session') || error.message.includes('login') || 
             error.message.includes('HTTP Status 500') || error.message.includes('ICCID輸入錯誤')) {
