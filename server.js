@@ -12,7 +12,7 @@ const fs = require('fs');
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = process.env.PORT || 3000; // 使用 Render 的動態端口
+const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -130,7 +130,7 @@ app.post('/api/query-sim', async (req, res) => {
             headless: true, 
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
             timeout: 60000,
-            userDataDir: '/opt/render/.cache/puppeteer' // Render 特定的快取路徑
+            userDataDir: '/opt/render/.cache/puppeteer'
         });
         
         page = await browser.newPage();
@@ -329,7 +329,7 @@ app.post('/api/query-sim', async (req, res) => {
             error: errorMessage,
             suggestion: suggestion,
             details: error.stack,
-            rawData: responseData.substring(0, 500) || 'No response data'
+            rawData: responseData ? responseData.substring(0, 500) : 'No response data'
         });
     } finally {
         try {

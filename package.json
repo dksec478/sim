@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "prebuild": "npx puppeteer browsers install chrome@stable"
+    "install": "npx puppeteer browsers install chrome@stable"
   },
   "engines": {
     "node": "16.x"
@@ -15,7 +15,7 @@
     "cheerio": "^1.0.0-rc.10",
     "cors": "^2.8.5",
     "iconv-lite": "^0.6.3",
-    "puppeteer": "^21.11.0",
+    "puppeteer": "^19.11.1",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
   }
