@@ -211,7 +211,7 @@
             const iccid = document.getElementById('iccid').value.trim();
             const queryButton = document.getElementById('queryButton');
             
-            console.log('Query button clicked, ICCID:', iccid); // 調試日誌
+            console.log('Query button clicked, ICCID:', iccid);
             
             document.getElementById('error').style.display = 'none';
             document.getElementById('success').style.display = 'none';
@@ -238,12 +238,12 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(60000) // 前端超時 60 秒
+                    signal: AbortSignal.timeout(30000) // 縮短超時到 30 秒
                 });
                 
                 const data = await response.json();
                 
-                console.log('API response:', data); // 調試日誌
+                console.log('API response:', data);
                 
                 if (response.ok) {
                     document.getElementById('result-iccid').textContent = iccid;
@@ -263,12 +263,12 @@
                     }
                     showError(errorMessage);
                     
-                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed'))) {
+                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed') || data.error.includes('Server busy'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
             } catch (err) {
-                console.error('Fetch error:', err); // 調試日誌
+                console.error('Fetch error:', err);
                 showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請稍後重試' : '無法連接伺服器，請檢查網絡並稍後重試'}</small>`);
                 document.getElementById('iccid').value = '';
             } finally {
@@ -276,12 +276,12 @@
                 document.getElementById('loading').style.display = 'none';
                 document.getElementById('progress').style.width = '0%';
                 queryButton.disabled = false;
-                console.log('Query completed, button enabled'); // 調試日誌
+                console.log('Query completed, button enabled');
             }
         }
 
         // 綁定防抖函數
-        document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 500));
+        document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 300));
 
         function showError(message) {
             const errorElement = document.getElementById('error');

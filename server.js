@@ -54,49 +54,72 @@ function isValidICCID(iccid) {
     return /^[0-9]{19,20}$/.test(iccid);
 }
 
-// 清理 SingletonLock 文件
-function cleanSingletonLock() {
-    const lockFile = '/tmp/puppeteer_cache/SingletonLock';
+// 清理 Puppeteer 快取目錄
+function cleanPuppeteerCache() {
+    const cacheDir = '/tmp/puppeteer_cache';
     try {
-        if (fs.existsSync(lockFile)) {
-            fs.unlinkSync(lockFile);
-            console.log('Cleaned SingletonLock file');
-            logToFile('Cleaned SingletonLock file');
+        if (fs.existsSync(cacheDir)) {
+            fs.readdirSync(cacheDir).forEach(file => {
+                const filePath = path.join(cacheDir, file);
+                try {
+                    fs.unlinkSync(filePath);
+                    console.log(`Cleaned ${filePath}`);
+                    logToFile(`Cleaned ${filePath}`);
+                } catch (err) {
+                    console.error(`Failed to clean ${filePath}:`, err.message);
+                    logToFile(`Failed to clean ${filePath}: ${err.message}`);
+                }
+            });
+        } else {
+            fs.mkdirSync(cacheDir, { recursive: true });
+            console.log(`Created ${cacheDir}`);
+            logToFile(`Created ${cacheDir}`);
         }
     } catch (err) {
-        console.error('Failed to clean SingletonLock:', err.message);
-        logToFile(`Failed to clean SingletonLock: ${err.message}`);
+        console.error('Failed to clean puppeteer cache:', err.message);
+        logToFile(`Failed to clean puppeteer cache: ${err.message}`);
     }
 }
 
 // 創建新瀏覽器實例
-async function createBrowser() {
-    cleanSingletonLock();
+async function createBrowser(retryCount = 0, maxRetries = 1) {
+    cleanPuppeteerCache();
     console.log('Launching Puppeteer browser...');
     logToFile('Launching Puppeteer browser...');
-    return await puppeteer.launch({
-        headless: 'new',
-        args: [
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-dev-shm-usage',
-            '--disable-gpu',
-            '--single-process',
-            '--disable-accelerated-2d-canvas',
-            '--no-zygote',
-            '--disable-background-networking',
-            '--disable-background-timer-throttling',
-            '--disable-renderer-backgrounding',
-            '--disable-extensions',
-            '--disable-sync',
-            '--disable-features=site-per-process' // 減少內存使用
-        ],
-        timeout: 60000,
-        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-        userDataDir: '/tmp/puppeteer_cache'
-    }).catch(err => {
+    try {
+        return await puppeteer.launch({
+            headless: 'new',
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--disable-accelerated-2d-canvas',
+                '--no-zygote',
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding',
+                '--disable-extensions',
+                '--disable-sync',
+                '--disable-features=site-per-process',
+                '--disable-web-security' // 減少潛在網絡限制
+            ],
+            timeout: 30000, // 縮短啟動超時
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+            userDataDir: '/tmp/puppeteer_cache'
+        });
+    } catch (err) {
+        console.error('Browser launch failed:', err.message);
+        logToFile(`Browser launch failed: ${err.message}`);
+        if (retryCount < maxRetries && err.message.includes('SingletonLock')) {
+            console.log(`Retrying browser launch (${retryCount + 1}/${maxRetries})...`);
+            logToFile(`Retrying browser launch (${retryCount + 1}/${maxRetries})...`);
+            cleanPuppeteerCache(); // 再次清理
+            return createBrowser(retryCount + 1, maxRetries);
+        }
         throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
-    });
+    }
 }
 
 // Login function with improved error handling
@@ -104,7 +127,7 @@ async function login(page, retryCount = 0, maxRetries = 3) {
     if (isLoginInProgress) {
         console.log('Login already in progress, waiting...');
         logToFile('Login already in progress, waiting...');
-        await new Promise(resolve => setTimeout(resolve, 15000)); // 增加等待時間
+        await new Promise(resolve => setTimeout(resolve, 15000));
         return;
     }
 
@@ -113,12 +136,12 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         console.log(`Navigating to login URL: ${LOGIN_URL}`);
         logToFile(`Navigating to login URL: ${LOGIN_URL}`);
         
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 60000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 30000 });
         if (!response.ok()) {
             throw new Error(`Failed to load login page, status: ${response.status()}`);
         }
 
-        // 等待頁面穩定並檢查輸入框
+        // 等待輸入框可見
         await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
         await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
 
@@ -130,7 +153,7 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         
         console.log('Waiting for navigation after login...');
         logToFile('Waiting for navigation after login...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch((err) => {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch((err) => {
             console.log('Navigation timeout, checking if login was successful...');
             logToFile(`Navigation timeout: ${err.message}`);
         });
@@ -162,9 +185,9 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         if (retryCount < maxRetries && !error.message.includes('detached Frame')) {
             console.log(`Retrying login (${retryCount + 1}/${maxRetries})...`);
             logToFile(`Retrying login (${retryCount + 1}/${maxRetries})...`);
-            // 重新創建瀏覽器
-            const browser = await createBrowser();
-            page = await browser.newPage();
+            // 重新創建頁面
+            await page.close().catch(() => {});
+            page = await page.browser().newPage();
             return login(page, retryCount + 1, maxRetries);
         }
 
@@ -225,9 +248,9 @@ app.post('/api/query-sim', async (req, res) => {
             console.log('Opening new page...');
             logToFile('Opening new page...');
             page = await browser.newPage();
-            await page.setDefaultNavigationTimeout(60000);
+            await page.setDefaultNavigationTimeout(30000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            await page.setViewport({ width: 480, height: 360 }); // 進一步減小視窗
+            await page.setViewport({ width: 320, height: 240 }); // 最小化視窗
 
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -265,6 +288,11 @@ app.post('/api/query-sim', async (req, res) => {
                 logToFile(`Browser console: ${msg.text()}`);
             });
 
+            page.on('close', () => {
+                console.log('Page closed unexpectedly');
+                logToFile('Page closed unexpectedly');
+            });
+
             if (sessionCookies.length === 0 || Date.now() - lastLoginTime > 30 * 60 * 1000) {
                 console.log('Session expired or not set, initiating login...');
                 logToFile('Session expired or not set, initiating login...');
@@ -283,7 +311,7 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
             const response = await page.goto(`${API_URL}?dat=${iccid}`, { 
                 waitUntil: 'networkidle2', 
-                timeout: 30000 // 縮短導航超時
+                timeout: 30000 
             }).catch(err => {
                 throw new Error(`Failed to navigate to API URL: ${err.message}`);
             });
@@ -457,13 +485,16 @@ app.post('/api/query-sim', async (req, res) => {
             } else if (error.message.includes('ICCID輸入錯誤')) {
                 statusCode = 400;
                 suggestion = '請重新輸入正確的 ICCID';
+            } else if (error.message.includes('SingletonLock')) {
+                errorMessage = 'Server busy, unable to start browser';
+                suggestion = 'Please try again in a few seconds';
             } else if (error.message.includes('Target closed') || error.message.includes('detached Frame')) {
                 errorMessage = 'Unable to connect to the server due to a login error';
                 suggestion = 'Please try again or contact support';
             }
 
             // 清除會話
-            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed') || error.message.includes('detached Frame')) {
+            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed') || error.message.includes('detached Frame') || error.message.includes('SingletonLock')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
             }
@@ -491,7 +522,7 @@ app.post('/api/query-sim', async (req, res) => {
                 console.error('Error closing browser:', e.message);
                 logToFile(`Error closing browser: ${e.message}`);
             }
-            cleanSingletonLock();
+            cleanPuppeteerCache();
         }
     });
 });
