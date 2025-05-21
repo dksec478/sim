@@ -130,7 +130,8 @@ app.post('/api/query-sim', async (req, res) => {
             headless: true, 
             args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
             timeout: 60000,
-            userDataDir: '/opt/render/.cache/puppeteer'
+            userDataDir: '/opt/render/.cache/puppeteer',
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         });
         
         page = await browser.newPage();
