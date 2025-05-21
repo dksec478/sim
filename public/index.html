@@ -211,6 +211,8 @@
             const iccid = document.getElementById('iccid').value.trim();
             const queryButton = document.getElementById('queryButton');
             
+            console.log('Query button clicked, ICCID:', iccid); // 調試日誌
+            
             document.getElementById('error').style.display = 'none';
             document.getElementById('success').style.display = 'none';
             document.getElementById('result').style.display = 'none';
@@ -236,11 +238,12 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
+                    signal: AbortSignal.timeout(60000) // 前端超時 60 秒
                 });
                 
                 const data = await response.json();
                 
-                console.log('API response:', data);
+                console.log('API response:', data); // 調試日誌
                 
                 if (response.ok) {
                     document.getElementById('result-iccid').textContent = iccid;
@@ -265,9 +268,43 @@
                     }
                 }
             } catch (err) {
-                console.error('Network error:', err);
-                showError('網絡錯誤<br><small>無法連接伺服器，請檢查網絡並稍後重試</small>');
+                console.error('Fetch error:', err); // 調試日誌
+                showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請稍後重試' : '無法連接伺服器，請檢查網絡並稍後重試'}</small>`);
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
-                document.getElementById('loading
+                document.getElementById('loading').style.display = 'none';
+                document.getElementById('progress').style.width = '0%';
+                queryButton.disabled = false;
+                console.log('Query completed, button enabled'); // 調試日誌
+            }
+        }
+
+        // 綁定防抖函數
+        document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 500));
+
+        function showError(message) {
+            const errorElement = document.getElementById('error');
+            errorElement.innerHTML = message;
+            errorElement.style.display = 'block';
+            errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+        
+        function showSuccess(message) {
+            const successElement = document.getElementById('success');
+            successElement.textContent = message;
+            successElement.style.display = 'block';
+            successElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }
+
+        // 重置表單
+        function resetForm() {
+            document.getElementById('iccid').value = '';
+            document.getElementById('error').style.display = 'none';
+            document.getElementById('success').style.display = 'none';
+            document.getElementById('result').style.display = 'none';
+            document.getElementById('queryButton').disabled = false;
+        }
+    </script>
+</body>
+</html>

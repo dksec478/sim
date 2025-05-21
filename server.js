@@ -69,12 +69,42 @@ function cleanSingletonLock() {
     }
 }
 
+// 創建新瀏覽器實例
+async function createBrowser() {
+    cleanSingletonLock();
+    console.log('Launching Puppeteer browser...');
+    logToFile('Launching Puppeteer browser...');
+    return await puppeteer.launch({
+        headless: 'new',
+        args: [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--single-process',
+            '--disable-accelerated-2d-canvas',
+            '--no-zygote',
+            '--disable-background-networking',
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            '--disable-extensions',
+            '--disable-sync',
+            '--disable-features=site-per-process' // 減少內存使用
+        ],
+        timeout: 60000,
+        executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+        userDataDir: '/tmp/puppeteer_cache'
+    }).catch(err => {
+        throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
+    });
+}
+
 // Login function with improved error handling
 async function login(page, retryCount = 0, maxRetries = 3) {
     if (isLoginInProgress) {
         console.log('Login already in progress, waiting...');
         logToFile('Login already in progress, waiting...');
-        await new Promise(resolve => setTimeout(resolve, 10000)); // 增加等待時間
+        await new Promise(resolve => setTimeout(resolve, 15000)); // 增加等待時間
         return;
     }
 
@@ -83,20 +113,20 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         console.log(`Navigating to login URL: ${LOGIN_URL}`);
         logToFile(`Navigating to login URL: ${LOGIN_URL}`);
         
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 60000 }); // 增加超時
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 60000 });
         if (!response.ok()) {
             throw new Error(`Failed to load login page, status: ${response.status()}`);
         }
 
-        // 等待輸入框可見，確保頁面穩定
+        // 等待頁面穩定並檢查輸入框
         await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
         await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
 
         console.log('Typing login credentials...');
         logToFile('Typing login credentials...');
-        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 100 }); // 增加輸入延遲
-        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 100 });
-        await page.click('input[type="submit"]');
+        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 200 });
+        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 200 });
+        await page.click('input[type="submit"]', { delay: 100 });
         
         console.log('Waiting for navigation after login...');
         logToFile('Waiting for navigation after login...');
@@ -129,14 +159,12 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         logToFile(`Login failed: ${error.message}, Stack: ${error.stack}`);
         sessionCookies = [];
 
-        if (retryCount < maxRetries) {
+        if (retryCount < maxRetries && !error.message.includes('detached Frame')) {
             console.log(`Retrying login (${retryCount + 1}/${maxRetries})...`);
             logToFile(`Retrying login (${retryCount + 1}/${maxRetries})...`);
-            // 在重試前關閉頁面並重新創建
-            if (page) {
-                await page.close().catch(() => {});
-            }
-            page = await page.browser().newPage();
+            // 重新創建瀏覽器
+            const browser = await createBrowser();
+            page = await browser.newPage();
             return login(page, retryCount + 1, maxRetries);
         }
 
@@ -188,45 +216,18 @@ app.post('/api/query-sim', async (req, res) => {
         let page;
 
         try {
-            // 清理 SingletonLock
-            cleanSingletonLock();
-
             // Log environment variables for debugging
             console.log('PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
             console.log('Checking Chrome path exists:', fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'));
             logToFile(`PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
 
-            console.log('Launching Puppeteer browser...');
-            logToFile('Launching Puppeteer browser...');
-            browser = await puppeteer.launch({ 
-                headless: 'new',
-                args: [
-                    '--no-sandbox',
-                    '--disable-setuid-sandbox',
-                    '--disable-dev-shm-usage',
-                    '--disable-gpu',
-                    '--single-process',
-                    '--disable-accelerated-2d-canvas',
-                    '--no-zygote',
-                    '--disable-background-networking',
-                    '--disable-background-timer-throttling',
-                    '--disable-renderer-backgrounding',
-                    '--disable-extensions', // 禁用擴展
-                    '--disable-sync' // 禁用同步
-                ],
-                timeout: 60000,
-                executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
-                userDataDir: '/tmp/puppeteer_cache'
-            }).catch(err => {
-                throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
-            });
-            
+            browser = await createBrowser();
             console.log('Opening new page...');
             logToFile('Opening new page...');
             page = await browser.newPage();
             await page.setDefaultNavigationTimeout(60000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            await page.setViewport({ width: 640, height: 480 });
+            await page.setViewport({ width: 480, height: 360 }); // 進一步減小視窗
 
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -282,12 +283,11 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
             const response = await page.goto(`${API_URL}?dat=${iccid}`, { 
                 waitUntil: 'networkidle2', 
-                timeout: 60000 
+                timeout: 30000 // 縮短導航超時
             }).catch(err => {
                 throw new Error(`Failed to navigate to API URL: ${err.message}`);
             });
 
-            // 提前檢查 500 錯誤
             if (response.status() === 500) {
                 console.error('Server returned 500 error');
                 logToFile('Server returned 500 error');
@@ -316,7 +316,6 @@ app.post('/api/query-sim', async (req, res) => {
                 throw new Error(`Failed to evaluate page script: ${err.message}`);
             });
 
-            // 檢查頁面是否已包含錯誤
             const initialContent = await page.content();
             if (initialContent.includes('HTTP Status 500') || initialContent.includes('StringIndexOutOfBoundsException')) {
                 console.error('Page contains 500 error');
@@ -372,7 +371,7 @@ app.post('/api/query-sim', async (req, res) => {
                 
                 console.log(`Re-navigating to: ${API_URL}?dat=${iccid}`);
                 logToFile(`Re-navigating to: ${API_URL}?dat=${iccid}`);
-                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2' }).catch(err => {
+                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 30000 }).catch(err => {
                     throw new Error(`Failed to re-navigate to API URL: ${err.message}`);
                 });
                 
@@ -459,12 +458,12 @@ app.post('/api/query-sim', async (req, res) => {
                 statusCode = 400;
                 suggestion = '請重新輸入正確的 ICCID';
             } else if (error.message.includes('Target closed') || error.message.includes('detached Frame')) {
-                errorMessage = 'Login failed due to server error';
+                errorMessage = 'Unable to connect to the server due to a login error';
                 suggestion = 'Please try again or contact support';
             }
 
-            // 僅在登錄相關錯誤時清除會話
-            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed')) {
+            // 清除會話
+            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed') || error.message.includes('detached Frame')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
             }
