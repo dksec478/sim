@@ -61,20 +61,19 @@
             display: none;
         }
         .error {
+            color: #d32f2f;
             margin-top: 10px;
             padding: 10px;
             border-radius: 4px;
-            font-weight: bold;
-        }
-        .error.invalid-iccid {
-            color: #d32f2f;
             background-color: #ffebee;
             border: 1px solid #ef9a9a;
+            font-weight: bold;
+            font-size: 16px;
         }
-        .error.network-error {
-            color: #e65100;
-            background-color: #fff3e0;
-            border: 1px solid #ff9800;
+        .error small {
+            font-weight: normal;
+            font-size: 14px;
+            color: #b71c1c;
         }
         .success {
             color: #388e3c;
@@ -83,6 +82,7 @@
             border-radius: 4px;
             background-color: #e8f5e9;
             border: 1px solid #a5d6a7;
+            font-size: 16px;
         }
         table {
             width: 100%;
@@ -106,11 +106,6 @@
         #iccid {
             font-family: monospace;
             letter-spacing: 1px;
-        }
-        .error-icon::before {
-            content: '⚠️ ';
-            font-size: 1.2em;
-            vertical-align: middle;
         }
     </style>
 </head>
@@ -196,10 +191,10 @@
                 if (width >= 100) {
                     clearInterval(interval);
                 } else {
-                    width += 5;
+                    width += 10; // 加快進度條
                     progressBar.style.width = width + '%';
                 }
-            }, 300);
+            }, 200);
             return interval;
         }
 
@@ -219,15 +214,14 @@
             document.getElementById('error').style.display = 'none';
             document.getElementById('success').style.display = 'none';
             document.getElementById('result').style.display = 'none';
-            document.getElementById('error').className = 'error'; // 重置錯誤樣式
             
             if (!iccid) {
-                showError('請輸入 ICCID 號碼', 'invalid_iccid');
+                showError('請輸入 ICCID 號碼<br><small>ICCID 不能為空</small>');
                 return;
             }
             
             if (iccid.length < 19 || iccid.length > 20) {
-                showError('ICCID 必須是19-20位數字', 'invalid_iccid');
+                showError('ICCID 格式錯誤<br><small>ICCID 必須是19-20位數字</small>');
                 return;
             }
             
@@ -261,19 +255,18 @@
                     showSuccess('查詢成功');
                 } else {
                     let errorMessage = data.error || '查詢失敗';
-                    const errorType = data.errorType || 'network_error';
                     if (data.suggestion) {
                         errorMessage += `<br><small>${data.suggestion}</small>`;
                     }
-                    showError(errorMessage, errorType);
+                    showError(errorMessage);
                     
-                    if (errorType === 'invalid_iccid' || data.error?.includes('Too many failed attempts')) {
+                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
             } catch (err) {
                 console.error('Network error:', err);
-                showError('網絡錯誤：無法連接到伺服器<br><small>請檢查您的網絡連線並稍後重試</small>', 'network_error');
+                showError('網絡錯誤<br><small>無法連接伺服器，請檢查網絡並稍後重試</small>');
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
@@ -286,10 +279,9 @@
         // 綁定防抖函數
         document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 1000));
 
-        function showError(message, errorType) {
+        function showError(message) {
             const errorElement = document.getElementById('error');
-            errorElement.innerHTML = `<span class="error-icon"></span>${message}`;
-            errorElement.className = `error ${errorType === 'invalid_iccid' ? 'invalid-iccid' : 'network-error'}`;
+            errorElement.innerHTML = message;
             errorElement.style.display = 'block';
             errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }

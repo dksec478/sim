@@ -32,7 +32,7 @@ const LOGIN_CREDENTIALS = {
 let sessionCookies = [];
 let lastLoginTime = 0;
 let isLoginInProgress = false;
-const errorCounts = new Map(); // 記錄錯誤 ICCID 的查詢次數
+const errorCounts = new Map();
 
 // 限制並發 Puppeteer 實例的佇列
 const puppeteerQueue = queue(async (task, callback) => {
@@ -147,7 +147,6 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile('ICCID is empty');
             return res.status(400).json({ 
                 error: 'ICCID cannot be empty',
-                errorType: 'invalid_iccid',
                 suggestion: 'Please enter a valid ICCID number'
             });
         }
@@ -157,7 +156,6 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile(`Invalid ICCID format: ${iccid}`);
             return res.status(400).json({ 
                 error: 'Invalid ICCID format',
-                errorType: 'invalid_iccid',
                 suggestion: 'ICCID should be 19-20 digits long and contain only numbers'
             });
         }
@@ -169,7 +167,6 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile(`Too many failed attempts for ICCID: ${iccid}`);
             return res.status(429).json({
                 error: 'Too many failed attempts',
-                errorType: 'invalid_iccid',
                 suggestion: 'Please try a different ICCID or wait before retrying'
             });
         }
@@ -218,7 +215,7 @@ app.post('/api/query-sim', async (req, res) => {
             page = await browser.newPage();
             await page.setDefaultNavigationTimeout(60000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            await page.setViewport({ width: 800, height: 600 });
+            await page.setViewport({ width: 640, height: 480 }); // 減小視窗大小以節省記憶體
 
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -279,19 +276,20 @@ app.post('/api/query-sim', async (req, res) => {
                 throw new Error(`Failed to navigate to API URL: ${err.message}`);
             });
 
+            // 提前檢查 500 錯誤
             if (response.status() === 500) {
                 console.error('Server returned 500 error');
                 logToFile('Server returned 500 error');
                 const errorContent = await response.text();
+                logToFile(`Full 500 error response: ${errorContent.substring(0, 1000)}`);
                 let errorMessage = 'Invalid ICCID: The server cannot process this ICCID';
-                let errorType = 'invalid_iccid';
                 if (errorContent.includes('StringIndexOutOfBoundsException')) {
                     errorMessage = 'Invalid ICCID: Incorrect format or length';
                 } else if (errorContent.includes('No data found')) {
                     errorMessage = 'No data found for this ICCID';
                 }
                 errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
-                throw new Error(errorMessage, { cause: { errorType } });
+                throw new Error(errorMessage);
             }
 
             console.log('Evaluating page script...');
@@ -305,12 +303,21 @@ app.post('/api/query-sim', async (req, res) => {
                 }
             }, iccid);
 
+            // 檢查頁面是否已包含錯誤
+            const initialContent = await page.content();
+            if (initialContent.includes('HTTP Status 500') || initialContent.includes('StringIndexOutOfBoundsException')) {
+                console.error('Page contains 500 error');
+                logToFile('Page contains 500 error');
+                errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
+                throw new Error('Invalid ICCID: The server cannot process this ICCID');
+            }
+
             try {
                 console.log('Waiting for displayBill to load...');
                 logToFile('Waiting for displayBill to load...');
                 await page.waitForFunction(
-                    'document.querySelector("#displayBill div Boll div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 90000 }
+                    'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
+                    { timeout: 30000 } // 縮短超時到 30 秒
                 );
             } catch (err) {
                 console.error('Timeout waiting for displayBill to load:', err.message);
@@ -318,13 +325,13 @@ app.post('/api/query-sim', async (req, res) => {
                 const content = await page.content();
                 if (content.includes('HTTP Status 500') || content.includes('StringIndexOutOfBoundsException')) {
                     errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
-                    throw new Error('Invalid ICCID: The server cannot process this ICCID', { cause: { errorType: 'invalid_iccid' } });
+                    throw new Error('Invalid ICCID: The server cannot process this ICCID');
                 }
                 if (content.includes('無效') || content.includes('無此資料')) {
                     errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
-                    throw new Error('No data found for this ICCID', { cause: { errorType: 'invalid_iccid' } });
+                    throw new Error('No data found for this ICCID');
                 }
-                throw new Error('Server connection timeout: Unable to load data', { cause: { errorType: 'network_error' } });
+                throw err;
             }
 
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -359,15 +366,17 @@ app.post('/api/query-sim', async (req, res) => {
                 if (reResponse.status() === 500) {
                     console.error('Server returned 500 error after re-login');
                     logToFile('Server returned 500 error after re-login');
+                    const errorContent = await reResponse.text();
+                    logToFile(`Full 500 error response after re-login: ${errorContent.substring(0, 1000)}`);
                     errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
-                    throw new Error('Invalid ICCID: The server cannot process this ICCID after re-login', { cause: { errorType: 'invalid_iccid' } });
+                    throw new Error('Invalid ICCID: The server cannot process this ICCID');
                 }
 
                 console.log('Waiting for displayBill after re-login...');
                 logToFile('Waiting for displayBill after re-login...');
                 await page.waitForFunction(
                     'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 90000 }
+                    { timeout: 30000 }
                 );
                 
                 await new Promise(resolve => setTimeout(resolve, 2000));
@@ -410,7 +419,7 @@ app.post('/api/query-sim', async (req, res) => {
                 console.log('Invalid ICCID detected, returning error');
                 logToFile('Invalid ICCID detected, returning error');
                 errorCounts.set(iccid, (errorCounts.get(iccid) || 0) + 1);
-                throw new Error('ICCID輸入錯誤', { cause: { errorType: 'invalid_iccid' } });
+                throw new Error('ICCID輸入錯誤');
             }
 
             // 查詢成功，清空錯誤計數
@@ -422,24 +431,23 @@ app.post('/api/query-sim', async (req, res) => {
             
             let statusCode = 500;
             let errorMessage = error.message;
-            let errorType = error.cause?.errorType || 'network_error';
             let suggestion = 'Please try again later or contact support';
             
-            if (error.message.includes('Invalid ICCID') || error.message.includes('ICCID輸入錯誤')) {
+            if (error.message.includes('Invalid ICCID')) {
                 statusCode = 400;
-                errorType = 'invalid_iccid';
                 suggestion = 'Please enter a valid 19-20 digit ICCID number';
             } else if (error.message.includes('No data found')) {
                 statusCode = 404;
-                errorType = 'invalid_iccid';
                 suggestion = 'No data found for this ICCID, please verify the number';
             } else if (error.message.includes('timeout') || error.message.includes('Timeout')) {
-                errorMessage = 'Server connection timeout: Unable to load data';
-                errorType = 'network_error';
-                suggestion = 'Please check your network connection and try again in a few minutes';
+                errorMessage = 'Request timeout, the server is taking too long to respond';
+                suggestion = ' DIVPlease try again in a few minutes';
+            } else if (error.message.includes('ICCID輸入錯誤')) {
+                statusCode = 400;
+                suggestion = '請重新輸入正確的 ICCID';
             }
 
-            // 僅在明確的登錄失效情況下清除會話
+            // 僅在登錄相關錯誤時清除會話
             if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
@@ -447,7 +455,6 @@ app.post('/api/query-sim', async (req, res) => {
 
             res.status(statusCode).json({ 
                 error: errorMessage,
-                errorType: errorType,
                 suggestion: suggestion,
                 details: error.stack,
                 rawData: responseData ? responseData.substring(0, 500) : 'No response data'
