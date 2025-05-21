@@ -34,7 +34,11 @@ let isLoginInProgress = false;
 
 // 日誌記錄函數
 function logToFile(message) {
-    fs.appendFileSync('server.log', `${new Date().toISOString()} - ${message}\n`);
+    try {
+        fs.appendFileSync('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
+    } catch (err) {
+        console.error('Failed to write to log file:', err.message);
+    }
 }
 
 // Helper function to validate ICCID
@@ -140,10 +144,15 @@ app.post('/api/query-sim', async (req, res) => {
     let page;
 
     try {
+        // Log environment variables for debugging
+        console.log('PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
+        console.log('Checking Chrome path exists:', fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'));
+        logToFile(`PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
+
         console.log('Launching Puppeteer browser...');
         logToFile('Launching Puppeteer browser...');
         browser = await puppeteer.launch({ 
-            headless: true, 
+            headless: 'new', // Use new headless mode
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -151,11 +160,14 @@ app.post('/api/query-sim', async (req, res) => {
                 '--disable-gpu',
                 '--single-process',
                 '--disable-accelerated-2d-canvas',
-                '--no-zygote'
+                '--no-zygote',
+                '--disable-background-networking',
+                '--disable-background-timer-throttling',
+                '--disable-renderer-backgrounding'
             ],
             timeout: 60000,
-            userDataDir: '/opt/render/.cache/puppeteer',
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+            userDataDir: '/tmp/puppeteer_cache'
         }).catch(err => {
             throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
         });
@@ -165,7 +177,7 @@ app.post('/api/query-sim', async (req, res) => {
         page = await browser.newPage();
         await page.setDefaultNavigationTimeout(60000);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        await page.setViewport({ width: 800, height: 600 }); // 減小視窗大小以降低記憶體使用
+        await page.setViewport({ width: 800, height: 600 });
 
         await page.setExtraHTTPHeaders({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -264,7 +276,7 @@ app.post('/api/query-sim', async (req, res) => {
             if (content.includes('無效') || content.includes('無此資料')) {
                 throw new Error('No data found for this ICCID');
             }
-            throw err; // Re-throw unexpected errors
+            throw err;
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
