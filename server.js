@@ -12,7 +12,7 @@ const fs = require('fs');
 puppeteer.use(StealthPlugin());
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 10000;
 
 app.use(cors());
 app.use(express.json());
@@ -46,6 +46,7 @@ function isValidICCID(iccid) {
 async function login(page, retryCount = 0, maxRetries = 2) {
     if (isLoginInProgress) {
         console.log('Login already in progress, waiting...');
+        logToFile('Login already in progress, waiting...');
         await new Promise(resolve => setTimeout(resolve, 5000));
         return;
     }
@@ -61,8 +62,9 @@ async function login(page, retryCount = 0, maxRetries = 2) {
         await page.type('input[name="password"]', LOGIN_CREDENTIALS.password);
         await page.click('input[type="submit"]');
         
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch((err) => {
             console.log('Navigation timeout, checking if login was successful...');
+            logToFile(`Navigation timeout: ${err.message}`);
         });
 
         const cookies = await page.cookies();
@@ -86,11 +88,12 @@ async function login(page, retryCount = 0, maxRetries = 2) {
         return true;
     } catch (error) {
         console.error('Login failed:', error.message);
-        logToFile(`Login failed: ${error.message}`);
+        logToFile(`Login failed: ${error.message}, Stack: ${error.stack}`);
         sessionCookies = [];
 
         if (retryCount < maxRetries) {
             console.log(`Retrying login (${retryCount + 1}/${maxRetries})...`);
+            logToFile(`Retrying login (${retryCount + 1}/${maxRetries})...`);
             return login(page, retryCount + 1, maxRetries);
         }
 
@@ -105,6 +108,8 @@ app.post('/api/query-sim', async (req, res) => {
     const { iccid } = req.body;
     
     if (!iccid) {
+        console.log('ICCID is empty');
+        logToFile('ICCID is empty');
         return res.status(400).json({ 
             error: 'ICCID cannot be empty',
             suggestion: 'Please enter a valid ICCID number'
@@ -112,6 +117,8 @@ app.post('/api/query-sim', async (req, res) => {
     }
 
     if (!isValidICCID(iccid)) {
+        console.log(`Invalid ICCID format: ${iccid}`);
+        logToFile(`Invalid ICCID format: ${iccid}`);
         return res.status(400).json({ 
             error: 'Invalid ICCID format',
             suggestion: 'ICCID should be 19-20 digits long and contain only numbers'
@@ -126,6 +133,8 @@ app.post('/api/query-sim', async (req, res) => {
     let page;
 
     try {
+        console.log('Launching Puppeteer browser...');
+        logToFile('Launching Puppeteer browser...');
         browser = await puppeteer.launch({ 
             headless: true, 
             args: [
@@ -142,6 +151,8 @@ app.post('/api/query-sim', async (req, res) => {
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         });
         
+        console.log('Opening new page...');
+        logToFile('Opening new page...');
         page = await browser.newPage();
         await page.setDefaultNavigationTimeout(60000);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
@@ -183,9 +194,13 @@ app.post('/api/query-sim', async (req, res) => {
         });
 
         if (sessionCookies.length === 0 || Date.now() - lastLoginTime > 30 * 60 * 1000) {
+            console.log('Session expired or not set, initiating login...');
+            logToFile('Session expired or not set, initiating login...');
             await login(page);
         }
 
+        console.log('Setting cookies...');
+        logToFile('Setting cookies...');
         const cookies = sessionCookies.map(c => {
             const [name, value] = c.split('=');
             return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
@@ -207,6 +222,8 @@ app.post('/api/query-sim', async (req, res) => {
             throw new Error('Invalid ICCID: The server cannot process this ICCID format');
         }
 
+        console.log('Evaluating page script...');
+        logToFile('Evaluating page script...');
         await page.evaluate((iccid) => {
             window.scrollTo(0, document.body.scrollHeight);
             if (typeof loading === 'function') {
@@ -217,6 +234,8 @@ app.post('/api/query-sim', async (req, res) => {
         }, iccid);
 
         try {
+            console.log('Waiting for displayBill to load...');
+            logToFile('Waiting for displayBill to load...');
             await page.waitForFunction(
                 'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
                 { timeout: 90000 }
@@ -233,10 +252,13 @@ app.post('/api/query-sim', async (req, res) => {
             if (content.includes('無效') || content.includes('無此資料')) {
                 throw new Error('No data found for this ICCID');
             }
+            throw err; // Re-throw unexpected errors
         }
 
         await new Promise(resolve => setTimeout(resolve, 2000));
 
+        console.log('Extracting page content...');
+        logToFile('Extracting page content...');
         responseData = await page.content();
         console.log('Query response (first 500 chars):', responseData.substring(0, 500));
         logToFile(`Query response (first 500 chars): ${responseData.substring(0, 500)}`);
@@ -248,12 +270,16 @@ app.post('/api/query-sim', async (req, res) => {
             lastLoginTime = 0;
             await login(page);
             
+            console.log('Setting new cookies after re-login...');
+            logToFile('Setting new cookies after re-login...');
             const newCookies = sessionCookies.map(c => {
                 const [name, value] = c.split('=');
                 return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
             });
             await page.setCookie(...newCookies);
             
+            console.log(`Re-navigating to: ${API_URL}?dat=${iccid}`);
+            logToFile(`Re-navigating to: ${API_URL}?dat=${iccid}`);
             await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2' });
             await page.evaluate((iccid) => {
                 if (typeof loading === 'function') {
@@ -261,6 +287,8 @@ app.post('/api/query-sim', async (req, res) => {
                 }
             }, iccid);
             
+            console.log('Waiting for displayBill after re-login...');
+            logToFile('Waiting for displayBill after re-login...');
             await page.waitForFunction(
                 'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
                 { timeout: 90000 }
@@ -286,6 +314,8 @@ app.post('/api/query-sim', async (req, res) => {
             }
         };
 
+        console.log('Extracting query result...');
+        logToFile('Extracting query result...');
         const result = {
             iccid: iccid,
             cardType: extractText('#displayBill div div table:nth-of-type(1) > tbody > tr:nth-child(2) > td:nth-child(1) > div'),
@@ -301,13 +331,15 @@ app.post('/api/query-sim', async (req, res) => {
         logToFile(`Query result: ${JSON.stringify(result)}`);
 
         if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
+            console.log('Invalid ICCID detected, returning error');
+            logToFile('Invalid ICCID detected, returning error');
             throw new Error('ICCID輸入錯誤');
         }
 
         res.json(result);
     } catch (error) {
         console.error('Query failed:', error.message);
-        logToFile(`Query failed: ${error.message}`);
+        logToFile(`Query failed: ${error.message}, Stack: ${error.stack}`);
         
         if (error.message.includes('Invalid ICCID') || error.message.includes('No data found') || 
             error.message.includes('session') || error.message.includes('login') || 
@@ -342,8 +374,16 @@ app.post('/api/query-sim', async (req, res) => {
         });
     } finally {
         try {
-            if (page) await page.close();
-            if (browser) await browser.close();
+            if (page) {
+                console.log('Closing page...');
+                logToFile('Closing page...');
+                await page.close();
+            }
+            if (browser) {
+                console.log('Closing browser...');
+                logToFile('Closing browser...');
+                await browser.close();
+            }
         } catch (e) {
             console.error('Error closing browser:', e.message);
             logToFile(`Error closing browser: ${e.message}`);
@@ -351,7 +391,7 @@ app.post('/api/query-sim', async (req, res) => {
     }
 });
 
-app.listen(PORT, () => {
-    console.log(`Server running at http://localhost:${PORT}`);
-    logToFile(`Server started at http://localhost:${PORT}`);
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running at http://0.0.0.0:${PORT}`);
+    logToFile(`Server started at http://0.0.0.0:${PORT}`);
 });
