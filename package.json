@@ -4,7 +4,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "postinstall": "puppeteer browsers install chrome@stable"
+    "build": "npm install"
   },
   "engines": {
     "node": "16.x"
