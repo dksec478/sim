@@ -45,6 +45,10 @@
         button:hover {
             background-color: #45a049;
         }
+        button:disabled {
+            background-color: #cccccc;
+            cursor: not-allowed;
+        }
         .result {
             margin-top: 20px;
             padding: 15px;
@@ -57,12 +61,20 @@
             display: none;
         }
         .error {
-            color: #d32f2f;
             margin-top: 10px;
             padding: 10px;
             border-radius: 4px;
+            font-weight: bold;
+        }
+        .error.invalid-iccid {
+            color: #d32f2f;
             background-color: #ffebee;
             border: 1px solid #ef9a9a;
+        }
+        .error.network-error {
+            color: #e65100;
+            background-color: #fff3e0;
+            border: 1px solid #ff9800;
         }
         .success {
             color: #388e3c;
@@ -94,6 +106,11 @@
         #iccid {
             font-family: monospace;
             letter-spacing: 1px;
+        }
+        .error-icon::before {
+            content: '⚠️ ';
+            font-size: 1.2em;
+            vertical-align: middle;
         }
     </style>
 </head>
@@ -202,14 +219,15 @@
             document.getElementById('error').style.display = 'none';
             document.getElementById('success').style.display = 'none';
             document.getElementById('result').style.display = 'none';
+            document.getElementById('error').className = 'error'; // 重置錯誤樣式
             
             if (!iccid) {
-                showError('請輸入 ICCID 號碼');
+                showError('請輸入 ICCID 號碼', 'invalid_iccid');
                 return;
             }
             
             if (iccid.length < 19 || iccid.length > 20) {
-                showError('ICCID 必須是19-20位數字');
+                showError('ICCID 必須是19-20位數字', 'invalid_iccid');
                 return;
             }
             
@@ -243,18 +261,19 @@
                     showSuccess('查詢成功');
                 } else {
                     let errorMessage = data.error || '查詢失敗';
+                    const errorType = data.errorType || 'network_error';
                     if (data.suggestion) {
-                        errorMessage += ` (${data.suggestion})`;
+                        errorMessage += `<br><small>${data.suggestion}</small>`;
                     }
-                    showError(errorMessage);
+                    showError(errorMessage, errorType);
                     
-                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500'))) {
+                    if (errorType === 'invalid_iccid' || data.error?.includes('Too many failed attempts')) {
                         document.getElementById('iccid').value = '';
                     }
                 }
             } catch (err) {
                 console.error('Network error:', err);
-                showError('網絡錯誤: ' + (err.message || '無法連接伺服器'));
+                showError('網絡錯誤：無法連接到伺服器<br><small>請檢查您的網絡連線並稍後重試</small>', 'network_error');
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
@@ -267,16 +286,19 @@
         // 綁定防抖函數
         document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 1000));
 
-        function showError(message) {
+        function showError(message, errorType) {
             const errorElement = document.getElementById('error');
-            errorElement.textContent = message;
+            errorElement.innerHTML = `<span class="error-icon"></span>${message}`;
+            errorElement.className = `error ${errorType === 'invalid_iccid' ? 'invalid-iccid' : 'network-error'}`;
             errorElement.style.display = 'block';
+            errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
         
         function showSuccess(message) {
             const successElement = document.getElementById('success');
             successElement.textContent = message;
             successElement.style.display = 'block';
+            successElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
 
         // 重置表單
