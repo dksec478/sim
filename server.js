@@ -128,7 +128,15 @@ app.post('/api/query-sim', async (req, res) => {
     try {
         browser = await puppeteer.launch({ 
             headless: true, 
-            args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage', '--disable-gpu'],
+            args: [
+                '--no-sandbox',
+                '--disable-setuid-sandbox',
+                '--disable-dev-shm-usage',
+                '--disable-gpu',
+                '--single-process',
+                '--disable-accelerated-2d-canvas',
+                '--no-zygote'
+            ],
             timeout: 60000,
             userDataDir: '/opt/render/.cache/puppeteer',
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
