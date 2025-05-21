@@ -229,6 +229,7 @@
             
             queryButton.disabled = true;
             document.getElementById('loading').style.display = 'block';
+            console.log('Showing loading animation');
             const progressInterval = animateProgressBar();
             
             try {
@@ -238,7 +239,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(20000) // 縮短超時到 20 秒
+                    signal: AbortSignal.timeout(20000)
                 });
                 
                 const data = await response.json();
@@ -263,17 +264,21 @@
                     }
                     showError(errorMessage);
                     
-                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed') || data.error.includes('Server busy') || data.error.includes('Server connection failed'))) {
+                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || 
+                        data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || 
+                        data.error.includes('Login failed') || data.error.includes('Server busy') || 
+                        data.error.includes('Server connection failed'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
             } catch (err) {
                 console.error('Fetch error:', err);
-                showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請稍後重試' : '無法連接伺服器，請檢查網絡並稍後重試'}</small>`);
+                showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : '無法連接到伺服器，請檢查網絡或等待10秒後重試'}</small>`);
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
                 document.getElementById('loading').style.display = 'none';
+                console.log('Hiding loading animation');
                 document.getElementById('progress').style.width = '0%';
                 queryButton.disabled = false;
                 console.log('Query completed, button enabled');

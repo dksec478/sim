@@ -45,13 +45,18 @@ const logToFile = (message) => {
 // 驗證 ICCID
 const isValidICCID = (iccid) => /^[0-9]{19,20}$/.test(iccid);
 
-// 清理快取目錄
+// 清理快取目錄並限制大小
 const cleanPuppeteerCache = () => {
     const cacheDir = '/tmp/puppeteer_cache';
     try {
         if (fs.existsSync(cacheDir)) {
-            fs.rmSync(cacheDir, { recursive: true, force: true });
-            logToFile(`Cleaned ${cacheDir}`);
+            const stats = fs.statSync(cacheDir);
+            if (stats.size > 50 * 1024 * 1024) { // 限制 50MB
+                logToFile('Cache dir too large, cleaning...');
+                fs.rmSync(cacheDir, { recursive: true, force: true });
+            } else {
+                fs.rmSync(cacheDir, { recursive: true, force: true });
+            }
         }
         fs.mkdirSync(cacheDir, { recursive: true });
         logToFile(`Created ${cacheDir}`);
@@ -76,7 +81,6 @@ const createBrowser = async (retryCount = 0) => {
                 '--no-zygote',
                 '--disable-extensions',
                 '--disable-sync',
-                '--disable-web-security',
                 '--no-first-run'
             ],
             timeout: 30000,
@@ -95,7 +99,7 @@ const createBrowser = async (retryCount = 0) => {
 // 登錄
 const login = async (page, retryCount = 0) => {
     if (isLoginInProgress) {
-        await new Promise(resolve => setTimeout(resolve, 15000));
+        await new Promise(resolve => setTimeout(resolve, 10000));
         return;
     }
 
@@ -107,7 +111,7 @@ const login = async (page, retryCount = 0) => {
 
         await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 60000 });
         await page.waitForSelector('input[name="password"]', { visible: true, timeout: 60000 });
-        await page.waitForFunction('document.readyState === "complete"', { timeout: 60000 });
+        await page.waitForFunction('document.activeElement !== null', { timeout: 60000 }); // 確保可交互
 
         logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 300 });
@@ -135,8 +139,8 @@ const login = async (page, retryCount = 0) => {
         logToFile(`Login failed: ${error.message}`);
         sessionCookies = [];
 
-        if (retryCount < 3) {
-            logToFile(`Retrying login (${retryCount + 1}/3)...`);
+        if (retryCount < 2) {
+            logToFile(`Retrying login (${retryCount + 1}/2)...`);
             const browser = await createBrowser();
             await page.close().catch(() => {});
             page = await browser.newPage();
@@ -179,13 +183,13 @@ app.post('/api/query-sim', async (req, res) => {
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,*/*;q=0.8',
                 'Accept-Language': 'zh-TW,zh-CN;q=0.9',
-                'Upgrade-Insecure-Requests': '1',
-                'X-Requested-With': 'XMLHttpRequest'
+                'Upgrade-Insecure-Requests': '1'
             });
 
             page.on('close', () => logToFile('Page closed unexpectedly'));
+            page.on('pageerror', err => logToFile(`Page error: ${err.message}`));
 
-            if (!sessionCookies.length || Date.now() - lastLoginTime > 30 * 60 * 1000) {
+            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) { // 25 分鐘重置會話
                 await login(page);
             }
 
@@ -282,7 +286,7 @@ app.post('/api/query-sim', async (req, res) => {
                               error.message.includes('timeout') ? 'Please try again in a few minutes' :
                               error.message.includes('ICCID輸入錯誤') ? '請重新輸入正確的 ICCID' :
                               error.message.includes('SingletonLock') ? 'Please try again in a few seconds' :
-                              'Please try again in a few seconds or contact support';
+                              'Please wait 10 seconds and try again or contact support';
 
             if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || 
                 error.message.includes('Target closed') || error.message.includes('Connection closed') || error.message.includes('SingletonLock')) {
@@ -291,10 +295,10 @@ app.post('/api/query-sim', async (req, res) => {
             }
 
             res.status(statusCode).json({ 
-                error: error.message,
+                error: error.message.includes('Target closed') || error.message.includes('Connection closed') ? 
+                      'Server connection failed' : error.message,
                 suggestion,
-                details: error.stack,
-                rawData: responseData.substring(0, 500)
+                details: error.stack
             });
         } finally {
             try {
