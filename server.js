@@ -53,15 +53,22 @@ async function login(page, retryCount = 0, maxRetries = 2) {
 
     isLoginInProgress = true;
     try {
-        console.log('Attempting to log in to the target system...');
-        logToFile('Attempting to log in to the target system...');
+        console.log(`Navigating to login URL: ${LOGIN_URL}`);
+        logToFile(`Navigating to login URL: ${LOGIN_URL}`);
         
-        await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        if (!response.ok()) {
+            throw new Error(`Failed to load login page, status: ${response.status()}`);
+        }
         
+        console.log('Typing login credentials...');
+        logToFile('Typing login credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username);
         await page.type('input[name="password"]', LOGIN_CREDENTIALS.password);
         await page.click('input[type="submit"]');
         
+        console.log('Waiting for navigation after login...');
+        logToFile('Waiting for navigation after login...');
         await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch((err) => {
             console.log('Navigation timeout, checking if login was successful...');
             logToFile(`Navigation timeout: ${err.message}`);
@@ -149,6 +156,8 @@ app.post('/api/query-sim', async (req, res) => {
             timeout: 60000,
             userDataDir: '/opt/render/.cache/puppeteer',
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
+        }).catch(err => {
+            throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
         });
         
         console.log('Opening new page...');
@@ -156,7 +165,8 @@ app.post('/api/query-sim', async (req, res) => {
         page = await browser.newPage();
         await page.setDefaultNavigationTimeout(60000);
         await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-        await page.setViewport({ width: 1280, height: 720 });
+        await page.setViewport({ width: 800, height: 600 }); // 減小視窗大小以降低記憶體使用
+
         await page.setExtraHTTPHeaders({
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'zh-TW,zh-CN;q=0.9,zh;q=0.8',
@@ -212,6 +222,8 @@ app.post('/api/query-sim', async (req, res) => {
         const response = await page.goto(`${API_URL}?dat=${iccid}`, { 
             waitUntil: 'networkidle2', 
             timeout: 60000 
+        }).catch(err => {
+            throw new Error(`Failed to navigate to API URL: ${err.message}`);
         });
 
         if (response.status() === 500) {
@@ -280,13 +292,16 @@ app.post('/api/query-sim', async (req, res) => {
             
             console.log(`Re-navigating to: ${API_URL}?dat=${iccid}`);
             logToFile(`Re-navigating to: ${API_URL}?dat=${iccid}`);
-            await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2' });
-            await page.evaluate((iccid) => {
-                if (typeof loading === 'function') {
-                    loading('prepaid_enquiry_details.jsp', 'displayBill', 'dat', iccid, 'loader');
-                }
-            }, iccid);
+            const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2' }).catch(err => {
+                throw new Error(`Failed to re-navigate to API URL: ${err.message}`);
+            });
             
+            if (reResponse.status() === 500) {
+                console.error('Server returned 500 error after re-login, clearing session...');
+                logToFile('Server returned 500 error after re-login, clearing session...');
+                throw new Error('Invalid ICCID: The server cannot process this ICCID format after re-login');
+            }
+
             console.log('Waiting for displayBill after re-login...');
             logToFile('Waiting for displayBill after re-login...');
             await page.waitForFunction(
