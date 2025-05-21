@@ -54,27 +54,18 @@ function isValidICCID(iccid) {
     return /^[0-9]{19,20}$/.test(iccid);
 }
 
-// 清理 Puppeteer 快取目錄
+// 清理 Puppeteer 快取目錄（遞迴刪除）
 function cleanPuppeteerCache() {
     const cacheDir = '/tmp/puppeteer_cache';
     try {
         if (fs.existsSync(cacheDir)) {
-            fs.readdirSync(cacheDir).forEach(file => {
-                const filePath = path.join(cacheDir, file);
-                try {
-                    fs.unlinkSync(filePath);
-                    console.log(`Cleaned ${filePath}`);
-                    logToFile(`Cleaned ${filePath}`);
-                } catch (err) {
-                    console.error(`Failed to clean ${filePath}:`, err.message);
-                    logToFile(`Failed to clean ${filePath}: ${err.message}`);
-                }
-            });
-        } else {
-            fs.mkdirSync(cacheDir, { recursive: true });
-            console.log(`Created ${cacheDir}`);
-            logToFile(`Created ${cacheDir}`);
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+            console.log(`Cleaned ${cacheDir}`);
+            logToFile(`Cleaned ${cacheDir}`);
         }
+        fs.mkdirSync(cacheDir, { recursive: true });
+        console.log(`Created ${cacheDir}`);
+        logToFile(`Created ${cacheDir}`);
     } catch (err) {
         console.error('Failed to clean puppeteer cache:', err.message);
         logToFile(`Failed to clean puppeteer cache: ${err.message}`);
@@ -103,9 +94,12 @@ async function createBrowser(retryCount = 0, maxRetries = 1) {
                 '--disable-extensions',
                 '--disable-sync',
                 '--disable-features=site-per-process',
-                '--disable-web-security' // 減少潛在網絡限制
+                '--disable-web-security',
+                '--no-first-run',
+                '--disable-notifications',
+                '--disable-client-side-phishing-detection' // 減少額外處理
             ],
-            timeout: 30000, // 縮短啟動超時
+            timeout: 30000,
             executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
             userDataDir: '/tmp/puppeteer_cache'
         });
@@ -115,7 +109,7 @@ async function createBrowser(retryCount = 0, maxRetries = 1) {
         if (retryCount < maxRetries && err.message.includes('SingletonLock')) {
             console.log(`Retrying browser launch (${retryCount + 1}/${maxRetries})...`);
             logToFile(`Retrying browser launch (${retryCount + 1}/${maxRetries})...`);
-            cleanPuppeteerCache(); // 再次清理
+            cleanPuppeteerCache();
             return createBrowser(retryCount + 1, maxRetries);
         }
         throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
@@ -136,24 +130,25 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         console.log(`Navigating to login URL: ${LOGIN_URL}`);
         logToFile(`Navigating to login URL: ${LOGIN_URL}`);
         
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 }); // 使用更穩定的加載事件
         if (!response.ok()) {
             throw new Error(`Failed to load login page, status: ${response.status()}`);
         }
 
-        // 等待輸入框可見
-        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
-        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
+        // 等待頁面穩定並檢查輸入框
+        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 60000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 60000 });
+        await page.waitForFunction('document.readyState === "complete"', { timeout: 60000 }); // 確保 DOM 完全加載
 
         console.log('Typing login credentials...');
         logToFile('Typing login credentials...');
-        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 200 });
-        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 200 });
+        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 300 }); // 增加延遲
+        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 300 });
         await page.click('input[type="submit"]', { delay: 100 });
         
         console.log('Waiting for navigation after login...');
         logToFile('Waiting for navigation after login...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch((err) => {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch((err) => {
             console.log('Navigation timeout, checking if login was successful...');
             logToFile(`Navigation timeout: ${err.message}`);
         });
@@ -182,12 +177,13 @@ async function login(page, retryCount = 0, maxRetries = 3) {
         logToFile(`Login failed: ${error.message}, Stack: ${error.stack}`);
         sessionCookies = [];
 
-        if (retryCount < maxRetries && !error.message.includes('detached Frame')) {
+        if (retryCount < maxRetries) {
             console.log(`Retrying login (${retryCount + 1}/${maxRetries})...`);
             logToFile(`Retrying login (${retryCount + 1}/${maxRetries})...`);
-            // 重新創建頁面
+            // 重新創建瀏覽器
+            const browser = await createBrowser();
             await page.close().catch(() => {});
-            page = await page.browser().newPage();
+            page = await browser.newPage();
             return login(page, retryCount + 1, maxRetries);
         }
 
@@ -250,7 +246,7 @@ app.post('/api/query-sim', async (req, res) => {
             page = await browser.newPage();
             await page.setDefaultNavigationTimeout(30000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            await page.setViewport({ width: 320, height: 240 }); // 最小化視窗
+            await page.setViewport({ width: 320, height: 240 });
 
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -488,13 +484,13 @@ app.post('/api/query-sim', async (req, res) => {
             } else if (error.message.includes('SingletonLock')) {
                 errorMessage = 'Server busy, unable to start browser';
                 suggestion = 'Please try again in a few seconds';
-            } else if (error.message.includes('Target closed') || error.message.includes('detached Frame')) {
-                errorMessage = 'Unable to connect to the server due to a login error';
-                suggestion = 'Please try again or contact support';
+            } else if (error.message.includes('Target closed') || error.message.includes('Connection closed')) {
+                errorMessage = 'Server connection failed';
+                suggestion = 'Please try again in a few seconds or contact support';
             }
 
             // 清除會話
-            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed') || error.message.includes('detached Frame') || error.message.includes('SingletonLock')) {
+            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed') || error.message.includes('Connection closed') || error.message.includes('SingletonLock')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
             }

@@ -238,7 +238,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(30000) // 縮短超時到 30 秒
+                    signal: AbortSignal.timeout(20000) // 縮短超時到 20 秒
                 });
                 
                 const data = await response.json();
@@ -263,7 +263,7 @@
                     }
                     showError(errorMessage);
                     
-                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed') || data.error.includes('Server busy'))) {
+                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed') || data.error.includes('Server busy') || data.error.includes('Server connection failed'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
