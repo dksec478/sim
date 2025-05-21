@@ -191,7 +191,7 @@
                 if (width >= 100) {
                     clearInterval(interval);
                 } else {
-                    width += 10; // 加快進度條
+                    width += 10;
                     progressBar.style.width = width + '%';
                 }
             }, 200);
@@ -260,7 +260,7 @@
                     }
                     showError(errorMessage);
                     
-                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts'))) {
+                    if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || data.error.includes('Login failed'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
@@ -270,36 +270,4 @@
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
-                document.getElementById('loading').style.display = 'none';
-                document.getElementById('progress').style.width = '0%';
-                queryButton.disabled = false;
-            }
-        }
-
-        // 綁定防抖函數
-        document.getElementById('queryButton').addEventListener('click', debounce(querySimStatus, 1000));
-
-        function showError(message) {
-            const errorElement = document.getElementById('error');
-            errorElement.innerHTML = message;
-            errorElement.style.display = 'block';
-            errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-        
-        function showSuccess(message) {
-            const successElement = document.getElementById('success');
-            successElement.textContent = message;
-            successElement.style.display = 'block';
-            successElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-        }
-
-        // 重置表單
-        function resetForm() {
-            document.getElementById('iccid').value = '';
-            document.getElementById('error').style.display = 'none';
-            document.getElementById('success').style.display = 'none';
-            document.getElementById('result').style.display = 'none';
-        }
-    </script>
-</body>
-</html>
+                document.getElementById('loading

@@ -70,11 +70,11 @@ function cleanSingletonLock() {
 }
 
 // Login function with improved error handling
-async function login(page, retryCount = 0, maxRetries = 2) {
+async function login(page, retryCount = 0, maxRetries = 3) {
     if (isLoginInProgress) {
         console.log('Login already in progress, waiting...');
         logToFile('Login already in progress, waiting...');
-        await new Promise(resolve => setTimeout(resolve, 5000));
+        await new Promise(resolve => setTimeout(resolve, 10000)); // 增加等待時間
         return;
     }
 
@@ -83,20 +83,24 @@ async function login(page, retryCount = 0, maxRetries = 2) {
         console.log(`Navigating to login URL: ${LOGIN_URL}`);
         logToFile(`Navigating to login URL: ${LOGIN_URL}`);
         
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 30000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'networkidle2', timeout: 60000 }); // 增加超時
         if (!response.ok()) {
             throw new Error(`Failed to load login page, status: ${response.status()}`);
         }
-        
+
+        // 等待輸入框可見，確保頁面穩定
+        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
+
         console.log('Typing login credentials...');
         logToFile('Typing login credentials...');
-        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username);
-        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password);
+        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 100 }); // 增加輸入延遲
+        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 100 });
         await page.click('input[type="submit"]');
         
         console.log('Waiting for navigation after login...');
         logToFile('Waiting for navigation after login...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch((err) => {
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch((err) => {
             console.log('Navigation timeout, checking if login was successful...');
             logToFile(`Navigation timeout: ${err.message}`);
         });
@@ -128,6 +132,11 @@ async function login(page, retryCount = 0, maxRetries = 2) {
         if (retryCount < maxRetries) {
             console.log(`Retrying login (${retryCount + 1}/${maxRetries})...`);
             logToFile(`Retrying login (${retryCount + 1}/${maxRetries})...`);
+            // 在重試前關閉頁面並重新創建
+            if (page) {
+                await page.close().catch(() => {});
+            }
+            page = await page.browser().newPage();
             return login(page, retryCount + 1, maxRetries);
         }
 
@@ -201,7 +210,9 @@ app.post('/api/query-sim', async (req, res) => {
                     '--no-zygote',
                     '--disable-background-networking',
                     '--disable-background-timer-throttling',
-                    '--disable-renderer-backgrounding'
+                    '--disable-renderer-backgrounding',
+                    '--disable-extensions', // 禁用擴展
+                    '--disable-sync' // 禁用同步
                 ],
                 timeout: 60000,
                 executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
@@ -215,7 +226,7 @@ app.post('/api/query-sim', async (req, res) => {
             page = await browser.newPage();
             await page.setDefaultNavigationTimeout(60000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-            await page.setViewport({ width: 640, height: 480 }); // 減小視窗大小以節省記憶體
+            await page.setViewport({ width: 640, height: 480 });
 
             await page.setExtraHTTPHeaders({
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
@@ -301,7 +312,9 @@ app.post('/api/query-sim', async (req, res) => {
                 } else {
                     console.error('loading function not defined');
                 }
-            }, iccid);
+            }, iccid).catch(err => {
+                throw new Error(`Failed to evaluate page script: ${err.message}`);
+            });
 
             // 檢查頁面是否已包含錯誤
             const initialContent = await page.content();
@@ -317,7 +330,7 @@ app.post('/api/query-sim', async (req, res) => {
                 logToFile('Waiting for displayBill to load...');
                 await page.waitForFunction(
                     'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 30000 } // 縮短超時到 30 秒
+                    { timeout: 30000 }
                 );
             } catch (err) {
                 console.error('Timeout waiting for displayBill to load:', err.message);
@@ -441,14 +454,17 @@ app.post('/api/query-sim', async (req, res) => {
                 suggestion = 'No data found for this ICCID, please verify the number';
             } else if (error.message.includes('timeout') || error.message.includes('Timeout')) {
                 errorMessage = 'Request timeout, the server is taking too long to respond';
-                suggestion = ' DIVPlease try again in a few minutes';
+                suggestion = 'Please try again in a few minutes';
             } else if (error.message.includes('ICCID輸入錯誤')) {
                 statusCode = 400;
                 suggestion = '請重新輸入正確的 ICCID';
+            } else if (error.message.includes('Target closed') || error.message.includes('detached Frame')) {
+                errorMessage = 'Login failed due to server error';
+                suggestion = 'Please try again or contact support';
             }
 
             // 僅在登錄相關錯誤時清除會話
-            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權')) {
+            if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || error.message.includes('Target closed')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
             }
@@ -464,12 +480,12 @@ app.post('/api/query-sim', async (req, res) => {
                 if (page) {
                     console.log('Closing page...');
                     logToFile('Closing page...');
-                    await page.close();
+                    await page.close().catch(() => {});
                 }
                 if (browser) {
                     console.log('Closing browser...');
                     logToFile('Closing browser...');
-                    await browser.close();
+                    await browser.close().catch(() => {});
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
             } catch (e) {
