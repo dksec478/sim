@@ -146,7 +146,6 @@ app.post('/api/query-sim', async (req, res) => {
     try {
         // Log environment variables for debugging
         console.log('PUPPETEER_EXECUTABLE_PATH:', process.env.PUPPETEER_EXECUTABLE_PATH);
-        console.log('Checking Chrome path exists:', fs.existsSync(process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable'));
         logToFile(`PUPPETEER_EXECUTABLE_PATH: ${process.env.PUPPETEER_EXECUTABLE_PATH}`);
 
         console.log('Launching Puppeteer browser...');
@@ -166,7 +165,7 @@ app.post('/api/query-sim', async (req, res) => {
                 '--disable-renderer-backgrounding'
             ],
             timeout: 60000,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || null, // Use default Chromium if not set
             userDataDir: '/tmp/puppeteer_cache'
         }).catch(err => {
             throw new Error(`Failed to launch Puppeteer browser: ${err.message}`);
@@ -300,7 +299,7 @@ app.post('/api/query-sim', async (req, res) => {
                 const [name, value] = c.split('=');
                 return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
             });
-            await page.setCookie(...newCookies);
+            await page.setCookie(...cookies);
             
             console.log(`Re-navigating to: ${API_URL}?dat=${iccid}`);
             logToFile(`Re-navigating to: ${API_URL}?dat=${iccid}`);
