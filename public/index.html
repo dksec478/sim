@@ -175,6 +175,18 @@
     </div>
 
     <script>
+        // 頁面加載時自動聚焦輸入框
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('iccid').focus();
+        });
+
+        // 鍵盤 Enter 觸發查詢
+        document.getElementById('iccid').addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                querySimStatus();
+            }
+        });
+
         // Input validation
         document.getElementById('iccid').addEventListener('input', function(e) {
             this.value = this.value.replace(/[^0-9]/g, '');
@@ -261,7 +273,9 @@
                     showSuccess('查詢成功');
                 } else {
                     let errorMessage = data.error || '查詢失敗';
-                    if (data.suggestion) {
+                    if (errorMessage.includes('Invalid ICCID')) {
+                        errorMessage = '錯誤的 ICCID<br><small>請輸入正確的19-20位ICCID號碼</small>';
+                    } else if (data.suggestion) {
                         errorMessage += `<br><small>${data.suggestion}</small>`;
                     }
                     showError(errorMessage);
@@ -277,7 +291,7 @@
                 console.error('Fetch error:', err);
                 if (retryCount < maxRetries && err.message !== 'Timeout') {
                     console.log('Retrying query...');
-                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 30000); // 30 秒重試
+                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 30000);
                     return;
                 }
                 showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : 

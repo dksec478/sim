@@ -194,7 +194,10 @@ const queryWithPuppeteer = async (iccid) => {
         await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 10000 });
 
         await logToFile('Waiting for displayBill...');
-        await page.waitForSelector('#displayBill div div table', { timeout: 10000 });
+        await page.waitForSelector('#displayBill div div table', { timeout: 10000 }).catch(async (err) => {
+            await logToFile(`Selector not found for ICCID ${iccid}: ${err.message}`);
+            throw new Error('Invalid ICCID: No data found for this ICCID');
+        });
 
         const responseData = await page.content();
         await logToFile(`Puppeteer response (first 1000 chars): ${responseData.substring(0, 1000)}`);
@@ -206,7 +209,7 @@ const queryWithPuppeteer = async (iccid) => {
             return text;
         };
 
-        return {
+        const result = {
             iccid,
             cardType: extractText('#displayBill div div table:nth-of-type(1) > tbody > tr:nth-child(2) > td:nth-child(1) > div'),
             location: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(1) > div'),
@@ -216,8 +219,16 @@ const queryWithPuppeteer = async (iccid) => {
             usageMB: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(12) > div', '0'),
             rawData: responseData.substring(0, 500)
         };
+
+        // 檢查是否所有關鍵字段均為 N/A
+        if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
+            await logToFile(`No valid data for ICCID ${iccid}`);
+            throw new Error('Invalid ICCID: No valid data returned');
+        }
+
+        return result;
     } catch (error) {
-        await logToFile(`Puppeteer query failed: ${error.message}`);
+        await logToFile(`Puppeteer query failed for ICCID ${iccid}: ${error.message}`);
         throw error;
     } finally {
         try {
@@ -234,7 +245,7 @@ const queryWithPuppeteer = async (iccid) => {
 
 // 健康檢查端點
 app.get('/health', async (req, res) => {
-    await logToFile('Health check requested');
+    await logToFile(`Health check requested from ${req.ip}`);
     res.status(200).json({ 
         status: 'ok', 
         uptime: process.uptime(), 
@@ -341,10 +352,6 @@ app.post('/api/query-sim', async (req, res) => {
             if (!$('#displayBill div div table').length) {
                 await logToFile('No data in #displayBill, falling back to Puppeteer...');
                 const result = await queryWithPuppeteer(iccid);
-                if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
-                    errorCounts.set(iccid, errorCount + 1);
-                    throw new Error('ICCID輸入錯誤');
-                }
 
                 // 緩存結果（有效期 8 小時）
                 queryCache.set(iccid, result);
@@ -375,10 +382,6 @@ app.post('/api/query-sim', async (req, res) => {
             if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
                 await logToFile('No valid data in axios response, falling back to Puppeteer...');
                 const puppeteerResult = await queryWithPuppeteer(iccid);
-                if (puppeteerResult.cardType === 'N/A' && puppeteerResult.location === 'N/A' && puppeteerResult.status === 'N/A') {
-                    errorCounts.set(iccid, errorCount + 1);
-                    throw new Error('ICCID輸入錯誤');
-                }
                 result = puppeteerResult;
             }
 
@@ -390,16 +393,16 @@ app.post('/api/query-sim', async (req, res) => {
             errorCounts.delete(iccid);
             res.json(result);
         } catch (error) {
-            await logToFile(`Query failed: ${error.message}`);
+            await logToFile(`Query failed for ICCID ${iccid}: ${error.message}`);
             const statusCode = error.message.includes('Invalid ICCID') || error.message.includes('ICCID輸入錯誤') ? 400 :
                               error.message.includes('No data found') ? 404 : 500;
 
-            const suggestion = error.message.includes('Invalid ICCID') ? 'Please enter a valid 19-20 digit ICCID number' :
-                              error.message.includes('No data found') ? 'No data found for this ICCID, please verify the number' :
-                              error.message.includes('timeout') ? 'Please try again in a few minutes' :
+            const suggestion = error.message.includes('Invalid ICCID') ? '請輸入正確的19-20位ICCID號碼' :
+                              error.message.includes('No data found') ? '此ICCID無數據，請驗證號碼' :
+                              error.message.includes('timeout') ? '請在幾分鐘後重試' :
                               error.message.includes('ICCID輸入錯誤') ? '請重新輸入正確的 ICCID' :
-                              error.message.includes('SingletonLock') ? 'Please try again in a few seconds' :
-                              'Please wait 10 seconds and try again or contact support';
+                              error.message.includes('SingletonLock') ? '請在幾秒後重試' :
+                              '請等待10秒後重試或聯繫支持';
 
             if (error.message.includes('session') || error.message.includes('login') || error.message.includes('未授權') || 
                 error.message.includes('Target closed') || error.message.includes('Connection closed') || error.message.includes('SingletonLock')) {
@@ -408,8 +411,9 @@ app.post('/api/query-sim', async (req, res) => {
             }
 
             res.status(statusCode).json({ 
-                error: error.message.includes('Target closed') || error.message.includes('Connection closed') ? 
-                      'Server unavailable' : error.message,
+                error: error.message.includes('Invalid ICCID') ? 'Invalid ICCID' : 
+                       error.message.includes('Target closed') || error.message.includes('Connection closed') ? 
+                       'Server unavailable' : error.message,
                 suggestion,
                 details: error.stack
             });
