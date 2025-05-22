@@ -1,9 +1,9 @@
 const express = require('express');
-const axios = require('axios');
+const axios = require('axios').create({ http2: true }); // 啟用 HTTP/2
 const cheerio = require('cheerio');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs');
+const fs = require('fs').promises; // 使用異步 fs
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { queue } = require('async');
@@ -14,14 +14,15 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 10000;
 
+app.set('trust proxy', true); // 信任 Render 代理
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 速率限制中間件（每分鐘 5 次請求）
+// 速率限制中間件（每分鐘 10 次）
 const limiter = rateLimit({
     windowMs: 60 * 1000, // 1 分鐘
-    max: 5, // 每個 IP 最多 5 次
+    max: 10, // 每個 IP 最多 10 次
     message: { error: 'Too many requests, please try again later', suggestion: '請等待1分鐘後重試' }
 });
 app.use('/api/query-sim', limiter);
@@ -46,9 +47,10 @@ const puppeteerQueue = queue(async (task, callback) => {
 }, 1);
 
 // 日誌記錄
-const logToFile = (message) => {
+const logToFile = async (message) => {
     try {
-        fs.appendFileSync('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
+        await fs.appendFile('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
+        await fs.appendFile('/app/server.log', `${new Date().toISOString()} - ${message}\n`); // 備用路徑
         console.log(message);
     } catch (err) {
         console.error('Log error:', err.message);
@@ -56,33 +58,37 @@ const logToFile = (message) => {
 };
 
 // 驗證 ICCID
-const isValidICCID = (iccid) => /^[0-9]{19,20}$/.test(iccid);
+const isValidICCID = (iccid) => {
+    const isValid = /^[0-9]{19,20}$/.test(iccid);
+    if (!isValid) logToFile(`Invalid ICCID format: ${iccid}`);
+    return isValid;
+};
 
 // 清理快取目錄
-const cleanPuppeteerCache = () => {
+const cleanPuppeteerCache = async () => {
     const cacheDir = '/tmp/puppeteer_cache';
     try {
         if (fs.existsSync(cacheDir)) {
-            fs.rmSync(cacheDir, { recursive: true, force: true });
-            logToFile(`Cleaned ${cacheDir}`);
+            await fs.rm(cacheDir, { recursive: true, force: true });
+            await logToFile(`Cleaned ${cacheDir}`);
         }
-        fs.mkdirSync(cacheDir, { recursive: true });
-        logToFile(`Created ${cacheDir}`);
+        await fs.mkdir(cacheDir, { recursive: true });
+        await logToFile(`Created ${cacheDir}`);
     } catch (err) {
-        logToFile(`Cache cleanup error: ${err.message}`);
+        await logToFile(`Cache cleanup error: ${err.message}`);
     }
 };
 
 // 創建瀏覽器（僅用於登錄）
 const createBrowser = async (retryCount = 0) => {
-    cleanPuppeteerCache();
-    logToFile('Launching Puppeteer browser for login...');
+    await cleanPuppeteerCache();
+    await logToFile('Launching Puppeteer browser for login...');
     try {
         const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         if (!fs.existsSync(chromePath)) {
             throw new Error(`Chrome not found at ${chromePath}`);
         }
-        logToFile(`Using Chrome at ${chromePath}`);
+        await logToFile(`Using Chrome at ${chromePath}`);
 
         return await puppeteer.launch({
             headless: 'new',
@@ -102,9 +108,9 @@ const createBrowser = async (retryCount = 0) => {
             userDataDir: '/tmp/puppeteer_cache'
         });
     } catch (err) {
-        logToFile(`Browser launch failed: ${err.message}`);
+        await logToFile(`Browser launch failed: ${err.message}`);
         if (retryCount < 1 && err.message.includes('SingletonLock')) {
-            logToFile('Retrying browser launch...');
+            await logToFile('Retrying browser launch...');
             return createBrowser(retryCount + 1);
         }
         throw new Error(`Browser launch failed: ${err.message}`);
@@ -125,19 +131,19 @@ const login = async () => {
         page = await browser.newPage();
         await page.setDefaultNavigationTimeout(10000);
 
-        logToFile(`Navigating to ${LOGIN_URL}`);
+        await logToFile(`Navigating to ${LOGIN_URL}`);
         const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
         if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
 
         await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 10000 });
         await page.waitForSelector('input[name="password"]', { visible: true, timeout: 10000 });
 
-        logToFile('Typing credentials...');
+        await logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 200 });
         await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 200 });
         await page.click('input[type="submit"]', { delay: 100 });
 
-        logToFile('Waiting for navigation...');
+        await logToFile('Waiting for navigation...');
         await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 }).catch(() => logToFile('Navigation timeout'));
 
         const cookies = await page.cookies();
@@ -151,30 +157,30 @@ const login = async () => {
             throw new Error('Login failed: Invalid credentials');
         }
 
-        logToFile('Login successful');
+        await logToFile('Login successful');
         lastLoginTime = Date.now();
         return true;
     } catch (error) {
-        logToFile(`Login failed: ${error.message}`);
+        await logToFile(`Login failed: ${error.message}`);
         sessionCookies = [];
         throw error;
     } finally {
         try {
             if (page) {
-                await new Promise(resolve => setTimeout(resolve, 1000)); // 延遲關閉
+                await new Promise(resolve => setTimeout(resolve, 1000));
                 await page.close();
             }
             if (browser) await browser.close();
         } catch (e) {
-            logToFile(`Close error: ${e.message}`);
+            await logToFile(`Close error: ${e.message}`);
         }
         isLoginInProgress = false;
     }
 };
 
 // 健康檢查端點
-app.get('/health', (req, res) => {
-    logToFile('Health check requested');
+app.get('/health', async (req, res) => {
+    await logToFile('Health check requested');
     res.status(200).json({ 
         status: 'ok', 
         uptime: process.uptime(), 
@@ -186,8 +192,10 @@ app.get('/health', (req, res) => {
 app.post('/api/query-sim', async (req, res) => {
     puppeteerQueue.push(async () => {
         const { iccid } = req.body;
+        await logToFile(`Received query request for ICCID: ${iccid}`);
 
         if (!iccid) {
+            await logToFile('ICCID is empty');
             return res.status(400).json({ error: 'ICCID cannot be empty', suggestion: 'Please enter a valid ICCID number' });
         }
 
@@ -197,16 +205,17 @@ app.post('/api/query-sim', async (req, res) => {
 
         const errorCount = errorCounts.get(iccid) || 0;
         if (errorCount >= 3) {
+            await logToFile(`Too many failed attempts for ICCID: ${iccid}`);
             return res.status(429).json({ error: 'Too many failed attempts', suggestion: 'Try a different ICCID or wait' });
         }
 
         // 檢查緩存
         if (queryCache.has(iccid)) {
-            logToFile(`Returning cached result for ICCID: ${iccid}`);
+            await logToFile(`Returning cached result for ICCID: ${iccid}`);
             return res.json(queryCache.get(iccid));
         }
 
-        logToFile(`Querying ICCID: ${iccid}`);
+        await logToFile(`Querying ICCID: ${iccid}`);
         let responseData = '';
 
         try {
@@ -214,9 +223,9 @@ app.post('/api/query-sim', async (req, res) => {
                 await login();
             }
 
-            logToFile(`Sending API request for ICCID: ${iccid}`);
+            await logToFile(`Sending API request for ICCID: ${iccid}`);
             let response;
-            for (let retry = 0; retry < 2; retry++) {
+            for (let retry = 0; retry < 3; retry++) {
                 try {
                     response = await axios.get(`${API_URL}?dat=${iccid}`, {
                         headers: {
@@ -225,16 +234,16 @@ app.post('/api/query-sim', async (req, res) => {
                             'Accept-Language': 'zh-TW,zh-CN;q=0.9',
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
                         },
-                        timeout: 10000
+                        timeout: 5000 // 縮短超時
                     });
                     break;
                 } catch (err) {
                     if (err.response && err.response.status === 429) {
                         const retryAfter = err.response.headers['retry-after'];
-                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000; // 默認 60 秒
-                        logToFile(`Rate limit hit, waiting ${waitTime}ms`);
+                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, retry) * 1000; // 指數退避
+                        await logToFile(`Rate limit hit, waiting ${waitTime}ms`);
                         await new Promise(resolve => setTimeout(resolve, waitTime));
-                    } else if (retry === 1) {
+                    } else if (retry === 2) {
                         throw err;
                     }
                 }
@@ -246,9 +255,11 @@ app.post('/api/query-sim', async (req, res) => {
             }
 
             responseData = response.data;
+            await logToFile(`API response (first 500 chars): ${responseData.substring(0, 500)}`);
             const $ = cheerio.load(responseData);
 
             if (responseData.includes('請登錄') || responseData.includes('未授權')) {
+                await logToFile('Session invalid, re-logging in...');
                 sessionCookies = [];
                 lastLoginTime = 0;
                 await login();
@@ -259,13 +270,14 @@ app.post('/api/query-sim', async (req, res) => {
                         'Accept-Language': 'zh-TW,zh-CN;q=0.9',
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
                     },
-                    timeout: 10000
+                    timeout: 5000
                 });
                 if (response.status !== 200) {
                     errorCounts.set(iccid, errorCount + 1);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
                 }
                 responseData = response.data;
+                await logToFile(`Retry API response (first 500 chars): ${responseData.substring(0, 500)}`);
                 $ = cheerio.load(responseData);
             }
 
@@ -291,14 +303,15 @@ app.post('/api/query-sim', async (req, res) => {
                 throw new Error('ICCID輸入錯誤');
             }
 
-            // 緩存結果（有效期 1 小時）
+            // 緩存結果（有效期 4 小時）
             queryCache.set(iccid, result);
-            setTimeout(() => queryCache.delete(iccid), 60 * 60 * 1000);
+            setTimeout(() => queryCache.delete(iccid), 4 * 60 * 60 * 1000);
+            if (queryCache.size > 1000) queryCache.clear(); // 限制緩存大小
 
             errorCounts.delete(iccid);
             res.json(result);
         } catch (error) {
-            logToFile(`Query failed: ${error.message}`);
+            await logToFile(`Query failed: ${error.message}`);
             const statusCode = error.message.includes('Invalid ICCID') || error.message.includes('ICCID輸入錯誤') ? 400 :
                               error.message.includes('No data found') ? 404 : 500;
 
@@ -326,25 +339,25 @@ app.post('/api/query-sim', async (req, res) => {
 });
 
 // 啟動前檢查
-try {
-    logToFile('Checking /tmp permissions...');
-    fs.accessSync('/tmp', fs.constants.W_OK);
-    logToFile('/tmp is writable');
-} catch (err) {
-    logToFile(`Error: /tmp not writable: ${err.message}`);
-}
-
-// 預加載登錄
 (async () => {
     try {
-        await login();
-        logToFile('Preloaded login successful');
+        await logToFile('Checking /tmp permissions...');
+        await fs.access('/tmp', fs.constants.W_OK);
+        await logToFile('/tmp is writable');
     } catch (err) {
-        logToFile(`Preload login failed: ${err.message}`);
+        await logToFile(`Error: /tmp not writable: ${err.message}`);
+    }
+
+    // 預加載登錄
+    try {
+        await login();
+        await logToFile('Preloaded login successful');
+    } catch (err) {
+        await logToFile(`Preload login failed: ${err.message}`);
     }
 })();
 
-app.listen(PORT, '0.0.0.0', () => {
-    logToFile(`Server started at http://0.0.0.0:${PORT}`);
-    logToFile(`Memory usage: ${JSON.stringify(process.memoryUsage())}`);
+app.listen(PORT, '0.0.0.0', async () => {
+    await logToFile(`Server started at http://0.0.0.0:${PORT}`);
+    await logToFile(`Memory usage: ${JSON.stringify(process.memoryUsage())}`);
 });

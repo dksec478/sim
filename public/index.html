@@ -126,7 +126,7 @@
         <button onclick="resetForm()">重置</button>
         
         <div class="loading" id="loading">
-            <p>正在查詢中，請稍候（可能需要60秒）...</p>
+            <p id="loadingText">正在查詢中，請稍候（可能需要60秒）...</p>
             <div id="progressBar" style="height: 4px; background: #e0e0e0; margin-top: 10px;">
                 <div id="progress" style="height: 100%; width: 0%; background: #4CAF50; transition: width 0.3s;"></div>
             </div>
@@ -210,6 +210,7 @@
         async function querySimStatus(retryCount = 0, maxRetries = 2) {
             const iccid = document.getElementById('iccid').value.trim();
             const queryButton = document.getElementById('queryButton');
+            const loadingText = document.getElementById('loadingText');
             
             console.log('Query button clicked, ICCID:', iccid, 'Retry:', retryCount);
             
@@ -228,6 +229,7 @@
             }
             
             queryButton.disabled = true;
+            loadingText.textContent = retryCount > 0 ? `正在第 ${retryCount + 1} 次重試，請稍候（可能需要60秒）...` : '正在查詢中，請稍候（可能需要60秒）...';
             document.getElementById('loading').style.display = 'block';
             console.log('Showing loading animation');
             const progressInterval = animateProgressBar();
@@ -275,7 +277,7 @@
                 console.error('Fetch error:', err);
                 if (retryCount < maxRetries && err.message !== 'Timeout') {
                     console.log('Retrying query...');
-                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 10000);
+                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 30000); // 30 秒重試
                     return;
                 }
                 showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : 
