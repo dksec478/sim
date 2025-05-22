@@ -1,9 +1,10 @@
 const express = require('express');
-const axios = require('axios').create({ http2: true }); // 啟用 HTTP/2
+const axios = require('axios').create({ http2: true });
 const cheerio = require('cheerio');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs').promises; // 使用異步 fs
+const fs = require('fs').promises; // 異步 fs
+const fsSync = require('fs'); // 同步 fs
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { queue } = require('async');
@@ -14,15 +15,15 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.set('trust proxy', true); // 信任 Render 代理
+app.set('trust proxy', 1); // 信任單層代理（Render）
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-// 速率限制中間件（每分鐘 10 次）
+// 速率限制中間件（每分鐘 15 次）
 const limiter = rateLimit({
     windowMs: 60 * 1000, // 1 分鐘
-    max: 10, // 每個 IP 最多 10 次
+    max: 15, // 每個 IP 最多 15 次
     message: { error: 'Too many requests, please try again later', suggestion: '請等待1分鐘後重試' }
 });
 app.use('/api/query-sim', limiter);
@@ -49,8 +50,10 @@ const puppeteerQueue = queue(async (task, callback) => {
 // 日誌記錄
 const logToFile = async (message) => {
     try {
-        await fs.appendFile('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
-        await fs.appendFile('/app/server.log', `${new Date().toISOString()} - ${message}\n`); // 備用路徑
+        await Promise.all([
+            fs.appendFile('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`),
+            fs.appendFile('/app/server.log', `${new Date().toISOString()} - ${message}\n`)
+        ]);
         console.log(message);
     } catch (err) {
         console.error('Log error:', err.message);
@@ -58,9 +61,9 @@ const logToFile = async (message) => {
 };
 
 // 驗證 ICCID
-const isValidICCID = (iccid) => {
+const isValidICCID = async (iccid) => {
     const isValid = /^[0-9]{19,20}$/.test(iccid);
-    if (!isValid) logToFile(`Invalid ICCID format: ${iccid}`);
+    if (!isValid) await logToFile(`Invalid ICCID format: ${iccid}`);
     return isValid;
 };
 
@@ -68,7 +71,7 @@ const isValidICCID = (iccid) => {
 const cleanPuppeteerCache = async () => {
     const cacheDir = '/tmp/puppeteer_cache';
     try {
-        if (fs.existsSync(cacheDir)) {
+        if (fsSync.existsSync(cacheDir)) {
             await fs.rm(cacheDir, { recursive: true, force: true });
             await logToFile(`Cleaned ${cacheDir}`);
         }
@@ -85,7 +88,7 @@ const createBrowser = async (retryCount = 0) => {
     await logToFile('Launching Puppeteer browser for login...');
     try {
         const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-        if (!fs.existsSync(chromePath)) {
+        if (!fsSync.existsSync(chromePath)) {
             throw new Error(`Chrome not found at ${chromePath}`);
         }
         await logToFile(`Using Chrome at ${chromePath}`);
@@ -157,7 +160,7 @@ const login = async () => {
             throw new Error('Login failed: Invalid credentials');
         }
 
-        await logToFile('Login successful');
+        await logToFile(`Login successful, JSESSIONID: ${sessionCookies.join('; ')}`);
         lastLoginTime = Date.now();
         return true;
     } catch (error) {
@@ -199,7 +202,7 @@ app.post('/api/query-sim', async (req, res) => {
             return res.status(400).json({ error: 'ICCID cannot be empty', suggestion: 'Please enter a valid ICCID number' });
         }
 
-        if (!isValidICCID(iccid)) {
+        if (!await isValidICCID(iccid)) {
             return res.status(400).json({ error: 'Invalid ICCID format', suggestion: 'ICCID must be 19-20 digits' });
         }
 
@@ -234,13 +237,13 @@ app.post('/api/query-sim', async (req, res) => {
                             'Accept-Language': 'zh-TW,zh-CN;q=0.9',
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
                         },
-                        timeout: 5000 // 縮短超時
+                        timeout: 3000 // 縮短超時
                     });
                     break;
                 } catch (err) {
                     if (err.response && err.response.status === 429) {
                         const retryAfter = err.response.headers['retry-after'];
-                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, retry) * 1000; // 指數退避
+                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, retry) * 2000; // 指數退避
                         await logToFile(`Rate limit hit, waiting ${waitTime}ms`);
                         await new Promise(resolve => setTimeout(resolve, waitTime));
                     } else if (retry === 2) {
@@ -251,11 +254,12 @@ app.post('/api/query-sim', async (req, res) => {
 
             if (!response || response.status !== 200) {
                 errorCounts.set(iccid, errorCount + 1);
+                await logToFile(`API request failed, status: ${response ? response.status : 'unknown'}`);
                 throw new Error('Invalid ICCID: Server cannot process this ICCID');
             }
 
             responseData = response.data;
-            await logToFile(`API response (first 500 chars): ${responseData.substring(0, 500)}`);
+            await logToFile(`API response (first 1000 chars): ${responseData.substring(0, 1000)}`);
             const $ = cheerio.load(responseData);
 
             if (responseData.includes('請登錄') || responseData.includes('未授權')) {
@@ -270,14 +274,15 @@ app.post('/api/query-sim', async (req, res) => {
                         'Accept-Language': 'zh-TW,zh-CN;q=0.9',
                         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
                     },
-                    timeout: 5000
+                    timeout: 3000
                 });
                 if (response.status !== 200) {
                     errorCounts.set(iccid, errorCount + 1);
+                    await logToFile(`Retry API request failed, status: ${response.status}`);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
                 }
                 responseData = response.data;
-                await logToFile(`Retry API response (first 500 chars): ${responseData.substring(0, 500)}`);
+                await logToFile(`Retry API response (first 1000 chars): ${responseData.substring(0, 1000)}`);
                 $ = cheerio.load(responseData);
             }
 
@@ -303,10 +308,10 @@ app.post('/api/query-sim', async (req, res) => {
                 throw new Error('ICCID輸入錯誤');
             }
 
-            // 緩存結果（有效期 4 小時）
+            // 緩存結果（有效期 8 小時）
             queryCache.set(iccid, result);
-            setTimeout(() => queryCache.delete(iccid), 4 * 60 * 60 * 1000);
-            if (queryCache.size > 1000) queryCache.clear(); // 限制緩存大小
+            setTimeout(() => queryCache.delete(iccid), 8 * 60 * 60 * 1000);
+            if (queryCache.size > 2000) queryCache.clear();
 
             errorCounts.delete(iccid);
             res.json(result);
@@ -342,7 +347,7 @@ app.post('/api/query-sim', async (req, res) => {
 (async () => {
     try {
         await logToFile('Checking /tmp permissions...');
-        await fs.access('/tmp', fs.constants.W_OK);
+        await fs.access('/tmp', fsSync.constants.W_OK);
         await logToFile('/tmp is writable');
     } catch (err) {
         await logToFile(`Error: /tmp not writable: ${err.message}`);
