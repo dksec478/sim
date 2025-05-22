@@ -100,7 +100,7 @@ const createBrowser = async (retryCount = 0) => {
                 '--disable-setuid-sandbox',
                 '--disable-dev-shm-usage'
             ],
-            timeout: 10000,
+            timeout: 20000, // 調整為 20 秒
             executablePath: chromePath,
             userDataDir: '/tmp/puppeteer_cache'
         });
@@ -117,7 +117,7 @@ const createBrowser = async (retryCount = 0) => {
 // 登錄並獲取 Cookie
 const login = async () => {
     if (isLoginInProgress) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
+        await new Promise(resolve => setTimeout(resolve, 20000));
         return;
     }
 
@@ -126,14 +126,14 @@ const login = async () => {
     try {
         browser = await createBrowser();
         page = await browser.newPage();
-        await page.setDefaultNavigationTimeout(10000);
+        await page.setDefaultNavigationTimeout(20000); // 設置為 20 秒
 
         await logToFile(`Navigating to ${LOGIN_URL}`);
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 20000 });
         if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
 
-        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 10000 });
-        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 10000 });
+        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 20000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 20000 });
 
         await logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 200 });
@@ -141,7 +141,7 @@ const login = async () => {
         await page.click('input[type="submit"]', { delay: 100 });
 
         await logToFile('Waiting for navigation...');
-        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 10000 }).catch(() => logToFile('Navigation timeout'));
+        await page.waitForNavigation({ waitUntil: 'networkidle0', timeout: 20000 }).catch(() => logToFile('Navigation timeout'));
 
         const cookies = await page.cookies();
         sessionCookies = cookies
@@ -181,7 +181,7 @@ const queryWithPuppeteer = async (iccid) => {
     try {
         browser = await createBrowser();
         page = await browser.newPage();
-        await page.setDefaultNavigationTimeout(10000);
+        await page.setDefaultNavigationTimeout(20000); // 設置為 20 秒
 
         await page.setCookie(...sessionCookies.map(c => ({
             name: c.split('=')[0],
@@ -191,10 +191,10 @@ const queryWithPuppeteer = async (iccid) => {
         })));
 
         await logToFile(`Navigating to ${API_URL}?dat=${iccid} with Puppeteer`);
-        await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 10000 });
+        await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 20000 });
 
         await logToFile('Waiting for displayBill...');
-        await page.waitForSelector('#displayBill div div table', { timeout: 10000 }).catch(async (err) => {
+        await page.waitForSelector('#displayBill div div table', { timeout: 20000 }).catch(async (err) => {
             await logToFile(`Selector not found for ICCID ${iccid}: ${err.message}`);
             throw new Error('Invalid ICCID: No data found for this ICCID');
         });
