@@ -239,7 +239,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(60000) // 延長超時到 60 秒
+                    signal: AbortSignal.timeout(60000)
                 });
                 
                 const data = await response.json();
@@ -275,7 +275,7 @@
                 console.error('Fetch error:', err);
                 if (retryCount < maxRetries && err.message !== 'Timeout') {
                     console.log('Retrying query...');
-                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 10000); // 10 秒後重試
+                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 10000);
                     return;
                 }
                 showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : 

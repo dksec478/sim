@@ -1,4 +1,5 @@
 const express = require('express');
+const axios = require('axios');
 const cheerio = require('cheerio');
 const cors = require('cors');
 const path = require('path');
@@ -19,6 +20,7 @@ app.use(express.static(path.join(__dirname, 'public')));
 // Configuration
 const BASE_URL = 'http://api2021.multibyte.com:57842';
 const LOGIN_URL = `${BASE_URL}/crm/index.html`;
+const LOGIN_ACTION_URL = `${BASE_URL}/crm/logon.jsp`;
 const API_URL = `${BASE_URL}/crm/prepaid_enquiry_action_load.jsp`;
 const LOGIN_CREDENTIALS = { username: 'RF001', password: 'R1900F' };
 
@@ -26,308 +28,6 @@ let sessionCookies = [];
 let lastLoginTime = 0;
 let isLoginInProgress = false;
 const errorCounts = new Map();
-
-// 限制並發查詢
-const puppeteerQueue = queue(async (task, callback) => {
-    await task();
-    callback();
-}, 1);
-
-// 日誌記錄
-const logToFile = (message) => {
-    try {
-        fs.appendFileSync('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
-        console.log(message); // 同時輸出到控制台
-    } catch (err) {
-        console.error('Log error:', err.message);
-    }
-};
-
-// 驗證 ICCID
-const isValidICCID = (iccid) => /^[0-9]{19,20}$/.test(iccid);
-
-// 清理快取目錄
-const cleanPuppeteerCache = () => {
-    const cacheDir = '/tmp/puppeteer_cache';
-    try {
-        if (fs.existsSync(cacheDir)) {
-            fs.rmSync(cacheDir, { recursive: true, force: true });
-            logToFile(`Cleaned ${cacheDir}`);
-        }
-        fs.mkdirSync(cacheDir, { recursive: true });
-        logToFile(`Created ${cacheDir}`);
-    } catch (err) {
-        logToFile(`Cache cleanup error: ${err.message}`);
-    }
-};
-
-// 創建瀏覽器
-const createBrowser = async (retryCount = 0) => {
-    cleanPuppeteerCache();
-    logToFile('Launching Puppeteer browser...');
-    try {
-        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
-        if (!fs.existsSync(chromePath)) {
-            throw new Error(`Chrome not found at ${chromePath}`);
-        }
-        logToFile(`Using Chrome at ${chromePath}`);
-
-        return await puppeteer.launch({
-            headless: 'new',
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote',
-                '--disable-extensions',
-                '--disable-sync',
-                '--no-first-run',
-                '--disable-background-networking'
-            ],
-            timeout: 15000, // 縮短超時
-            executablePath: chromePath,
-            userDataDir: '/tmp/puppeteer_cache'
-        });
-    } catch (err) {
-        logToFile(`Browser launch failed: ${err.message}`);
-        if (retryCount < 1 && err.message.includes('SingletonLock')) {
-            logToFile('Retrying browser launch...');
-            return createBrowser(retryCount + 1);
-        }
-        throw new Error(`Browser launch failed: ${err.message}`);
-    }
-};
-
-// 登錄
-const login = async (page, retryCount = 0) => {
-    if (isLoginInProgress) {
-        await new Promise(resolve => setTimeout(resolve, 10000));
-        return;
-    }
-
-    isLoginInProgress = true;
-    try {
-        logToFile(`Navigating to ${LOGIN_URL}`);
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
-        if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
-
-        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 15000 });
-        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 15000 });
-        await page.waitForFunction('document.activeElement !== null', { timeout: 15000 });
-
-        logToFile('Typing credentials...');
-        await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 300 });
-        await page.type('input[name="password"]', LOGIN_CREDENTIALS.password, { delay: 300 });
-        await page.click('input[type="submit"]', { delay: 100 });
-
-        logToFile('Waiting for navigation...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => logToFile('Navigation timeout'));
-
-        const cookies = await page.cookies();
-        sessionCookies = cookies
-            .filter(c => c.name === 'JSESSIONID' && c.value.length > 10)
-            .map(c => `${c.name}=${c.value}`);
-
-        if (!sessionCookies.length) throw new Error('No valid session cookies');
-        const content = cheerio.load(await page.content());
-        if (content('body').text().includes('無效') || content('body').text().includes('錯誤')) {
-            throw new Error('Login failed: Invalid credentials');
-        }
-
-        logToFile('Login successful');
-        lastLoginTime = Date.now();
-        return true;
-    } catch (error) {
-        logToFile(`Login failed: ${error.message}`);
-        sessionCookies = [];
-
-        if (retryCount < 2) {
-            logToFile(`Retrying login (${retryCount + 1}/2)...`);
-            const browser = await createBrowser();
-            await page.close().catch(() => {});
-            page = await browser.newPage();
-            return login(page, retryCount + 1);
-        }
-        throw error;
-    } finally {
-        isLoginInProgress = false;
-    }
-};
-
-// 健康檢查端點
-app.get('/health', (req, res) => {
-    logToFile('Health check requested');
-    res.status(200).json({ 
-        status: 'ok', 
-        uptime: process.uptime(), 
-        memory: process.memoryUsage()
-    });
-});
-
-// 查詢端點
-app.post('/api/query-sim', async (req, res) => {
-    puppeteerQueue.push(async () => {
-        const { iccid } = req.body;
-
-        if (!iccid) {
-            return res.status(400).json({ error: 'ICCID cannot be empty', suggestion: 'Please enter a valid ICCID number' });
-        }
-
-        if (!isValidICCID(iccid)) {
-            return res.status(400).json({ error: 'Invalid ICCID format', suggestion: 'ICCID must be 19-20 digits' });
-        }
-
-        const errorCount = errorCounts.get(iccid) || 0;
-        if (errorCount >= 3) {
-            return res.status(429).json({ error: 'Too many failed attempts', suggestion: 'Try a different ICCID or wait' });
-        }
-
-        logToFile(`Querying ICCID: ${iccid}`);
-        let browser, page, responseData = '';
-
-        try {
-            browser = await createBrowser();
-            page = await browser.newPage();
-            await page.setDefaultNavigationTimeout(15000);
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124');
-            await page.setViewport({ width: 320, height: 240 });
-
-            await page.setExtraHTTPHeaders({
-                'Accept': 'text/html,*/*;q=0.8',
-                'Accept-Language': 'zh-TW,zh-CN;q=0.9',
-                'Upgrade-Insecure-Requests': '1'
-            });
-
-            page.on('close', () => logToFile('Page closed unexpectedly'));
-            page.on('pageerror', err => logToFile(`Page error: ${err.message}`));
-
-            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) {
-                await login(page);
-            }
-
-            logToFile('Setting cookies...');
-            await page.setCookie(...sessionCookies.map(c => {
-                const [name, value] = c.split('=');
-                return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
-            }));
-
-            logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
-            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 15000 });
-
-            if (response.status() === 500) {
-                errorCounts.set(iccid, errorCount + 1);
-                throw new Error('Invalid ICCID: Server cannot process this ICCID');
-            }
-
-            logToFile('Evaluating page script...');
-            await page.evaluate(iccid => {
-                window.scrollTo(0, document.body.scrollHeight);
-                if (typeof loading === 'function') loading('prepaid_enquiry_details.jsp', 'displayBill', 'dat', iccid, 'loader');
-            }, iccid);
-
-            const initialContent = await page.content();
-            if (initialContent.includes('HTTP Status 500') || initialContent.includes('StringIndexOutOfBoundsException')) {
-                errorCounts.set(iccid, errorCount + 1);
-                throw new Error('Invalid ICCID: Server cannot process this ICCID');
-            }
-
-            logToFile('Waiting for displayBill...');
-            await page.waitForFunction(
-                'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                { timeout: 15000 }
-            );
-
-            await new Promise(resolve => setTimeout(resolve, 2000));
-            responseData = await page.content();
-            const $ = cheerio.load(responseData);
-
-            if (responseData.includes('請登錄') || responseData.includes('未授權')) {
-                sessionCookies = [];
-                lastLoginTime = 0;
-                await login(page);
-                await page.setCookie(...sessionCookies.map(c => {
-                    const [name, value] = c.split('=');
-                    return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
-                }));
-
-                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 15000 });
-                if (reResponse.status() === 500) {
-                    errorCounts.set(iccid, errorCount + 1);
-                    throw new Error('Invalid ICCID: Server cannot process this ICCID');
-                }
-
-                await page.waitForFunction(
-                    'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 15000 }
-                );
-                responseData = await page.content();
-                $ = cheerio.load(responseData);
-            }
-
-            const extractText = (selector, defaultValue = 'N/A') => {
-                const text = $(selector).text().trim() || defaultValue;
-                logToFile(`Extracted "${selector}": ${text}`);
-                return text;
-            };
-
-            const result = {
-                iccid,
-                cardType: extractText('#displayBill div div table:nth-of-type(1) > tbody > tr:nth-child(2) > td:nth-child(1) > div'),
-                location: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(1) > div'),
-                status: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(3) > div'),
-                activationTime: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(4) > div'),
-                cancellationTime: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(5) > div'),
-                usageMB: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(12) > div', '0'),
-                rawData: responseData.substring(0, 500)
-            };
-
-            if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
-                errorCounts.set(iccid, errorCount + 1);
-                throw new Error('ICCID輸入錯誤');
-            }
-
-            errorCounts.delete(iccid);
-            res.json(result);
-        } catch (error) {
-            logToFile(`Query failed: ${error.message}`);
-            const statusCode = error.message.includes('Invalid ICCID') || error.message.includes('ICCID輸入錯誤') ? 400 :
-                              error.message.includes('No data found') ? 404 : 500;
-
-            const suggestion = error.message.includes('Invalid ICCID') ? 'Please enter a valid 19-20 digit ICCID number' :
-                              error.message.includes('No data found') ? 'No data found for this ICCID, please verify the number' :
-                              error.message.includes('timeout') ? 'Please try again in a few minutes' :
-                              error.message.includes('ICCID輸入錯誤') ? '請重新輸入正確的 ICCID' :
-                       const express = require('express');
-const cheerio = require('cheerio');
-const cors = require('cors');
-const path = require('path');
-const fs = require('fs');
-const puppeteer = require('puppeteer-extra');
-const StealthPlugin = require('puppeteer-extra-plugin-stealth');
-const { queue } = require('async');
-
-puppeteer.use(StealthPlugin());
-
-const app = express();
-const PORT = process.env.PORT || 10000;
-
-app.use(cors());
-app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
-
-// Configuration
-const BASE_URL = 'http://api2021.multibyte.com:57842';
-const LOGIN_URL = `${BASE_URL}/crm/index.html`;
-const API_URL = `${BASE_URL}/crm/prepaid_enquiry_action_load.jsp`;
-const LOGIN_CREDENTIALS = { username: 'RF001', password: 'R1900F' };
-
-let sessionCookies = [];
-let lastLoginTime = 0;
-let isLoginInProgress = false;
-const errorCounts = new Map();
-let globalBrowser = null; // 全局瀏覽器實例
 
 // 限制並發查詢
 const puppeteerQueue = queue(async (task, callback) => {
@@ -363,15 +63,10 @@ const cleanPuppeteerCache = () => {
     }
 };
 
-// 創建或復用瀏覽器
-const getBrowser = async (retryCount = 0) => {
-    if (globalBrowser) {
-        logToFile('Reusing existing browser...');
-        return globalBrowser;
-    }
-
+// 創建瀏覽器（僅用於登錄）
+const createBrowser = async (retryCount = 0) => {
     cleanPuppeteerCache();
-    logToFile('Launching Puppeteer browser...');
+    logToFile('Launching Puppeteer browser for login...');
     try {
         const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         if (!fs.existsSync(chromePath)) {
@@ -379,7 +74,7 @@ const getBrowser = async (retryCount = 0) => {
         }
         logToFile(`Using Chrome at ${chromePath}`);
 
-        globalBrowser = await puppeteer.launch({
+        return await puppeteer.launch({
             headless: 'new',
             args: [
                 '--no-sandbox',
@@ -390,40 +85,42 @@ const getBrowser = async (retryCount = 0) => {
                 '--no-zygote',
                 '--disable-extensions',
                 '--disable-sync',
-                '--no-first-run',
-                '--disable-background-networking'
+                '--no-first-run'
             ],
-            timeout: 10000, // 縮短超時
+            timeout: 10000,
             executablePath: chromePath,
             userDataDir: '/tmp/puppeteer_cache'
         });
-        return globalBrowser;
     } catch (err) {
         logToFile(`Browser launch failed: ${err.message}`);
         if (retryCount < 1 && err.message.includes('SingletonLock')) {
             logToFile('Retrying browser launch...');
-            return getBrowser(retryCount + 1);
+            return createBrowser(retryCount + 1);
         }
         throw new Error(`Browser launch failed: ${err.message}`);
     }
 };
 
-// 登錄
-const login = async (page, retryCount = 0) => {
+// 登錄並獲取 Cookie
+const login = async () => {
     if (isLoginInProgress) {
         await new Promise(resolve => setTimeout(resolve, 10000));
         return;
     }
 
     isLoginInProgress = true;
+    let browser, page;
     try {
+        browser = await createBrowser();
+        page = await browser.newPage();
+        await page.setDefaultNavigationTimeout(10000);
+
         logToFile(`Navigating to ${LOGIN_URL}`);
         const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 10000 });
         if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
 
         await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 10000 });
         await page.waitForSelector('input[name="password"]', { visible: true, timeout: 10000 });
-        await page.waitForFunction('document.activeElement !== null', { timeout: 10000 });
 
         logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 200 });
@@ -450,16 +147,14 @@ const login = async (page, retryCount = 0) => {
     } catch (error) {
         logToFile(`Login failed: ${error.message}`);
         sessionCookies = [];
-
-        if (retryCount < 2) {
-            logToFile(`Retrying login (${retryCount + 1}/2)...`);
-            const browser = await getBrowser();
-            await page.close().catch(() => {});
-            page = await browser.newPage();
-            return login(page, retryCount + 1);
-        }
         throw error;
     } finally {
+        try {
+            if (page) await page.close();
+            if (browser) await browser.close();
+        } catch (e) {
+            logToFile(`Close error: ${e.message}`);
+        }
         isLoginInProgress = false;
     }
 };
@@ -493,83 +188,50 @@ app.post('/api/query-sim', async (req, res) => {
         }
 
         logToFile(`Querying ICCID: ${iccid}`);
-        let browser, page, responseData = '';
+        let responseData = '';
 
         try {
-            browser = await getBrowser();
-            page = await browser.newPage();
-            await page.setDefaultNavigationTimeout(10000);
-            await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124');
-            await page.setViewport({ width: 320, height: 240 });
+            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) {
+                await login();
+            }
 
-            await page.setExtraHTTPHeaders({
-                'Accept': 'text/html,*/*;q=0.8',
-                'Accept-Language': 'zh-TW,zh-CN;q=0.9',
-                'Upgrade-Insecure-Requests': '1'
+            logToFile(`Sending API request for ICCID: ${iccid}`);
+            const response = await axios.get(`${API_URL}?dat=${iccid}`, {
+                headers: {
+                    'Cookie': sessionCookies.join('; '),
+                    'Accept': 'text/html,*/*;q=0.8',
+                    'Accept-Language': 'zh-TW,zh-CN;q=0.9',
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
+                },
+                timeout: 10000
             });
 
-            page.on('close', () => logToFile('Page closed unexpectedly'));
-            page.on('pageerror', err => logToFile(`Page error: ${err.message}`));
-
-            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) {
-                await login(page);
-            }
-
-            logToFile('Setting cookies...');
-            await page.setCookie(...sessionCookies.map(c => {
-                const [name, value] = c.split('=');
-                return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
-            }));
-
-            logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
-            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 10000 });
-
-            if (response.status() === 500) {
+            if (response.status !== 200) {
                 errorCounts.set(iccid, errorCount + 1);
                 throw new Error('Invalid ICCID: Server cannot process this ICCID');
             }
 
-            logToFile('Evaluating page script...');
-            await page.evaluate(iccid => {
-                window.scrollTo(0, document.body.scrollHeight);
-                if (typeof loading === 'function') loading('prepaid_enquiry_details.jsp', 'displayBill', 'dat', iccid, 'loader');
-            }, iccid);
-
-            const initialContent = await page.content();
-            if (initialContent.includes('HTTP Status 500') || initialContent.includes('StringIndexOutOfBoundsException')) {
-                errorCounts.set(iccid, errorCount + 1);
-                throw new Error('Invalid ICCID: Server cannot process this ICCID');
-            }
-
-            logToFile('Waiting for displayBill...');
-            await page.waitForFunction(
-                'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                { timeout: 10000 }
-            );
-
-            responseData = await page.content();
+            responseData = response.data;
             const $ = cheerio.load(responseData);
 
             if (responseData.includes('請登錄') || responseData.includes('未授權')) {
                 sessionCookies = [];
                 lastLoginTime = 0;
-                await login(page);
-                await page.setCookie(...sessionCookies.map(c => {
-                    const [name, value] = c.split('=');
-                    return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
-                }));
-
-                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 10000 });
-                if (reResponse.status() === 500) {
+                await login();
+                const retryResponse = await axios.get(`${API_URL}?dat=${iccid}`, {
+                    headers: {
+                        'Cookie': sessionCookies.join('; '),
+                        'Accept': 'text/html,*/*;q=0.8',
+                        'Accept-Language': 'zh-TW,zh-CN;q=0.9',
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
+                    },
+                    timeout: 10000
+                });
+                if (retryResponse.status !== 200) {
                     errorCounts.set(iccid, errorCount + 1);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
                 }
-
-                await page.waitForFunction(
-                    'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 10000 }
-                );
-                responseData = await page.content();
+                responseData = retryResponse.data;
                 $ = cheerio.load(responseData);
             }
 
@@ -621,15 +283,6 @@ app.post('/api/query-sim', async (req, res) => {
                 suggestion,
                 details: error.stack
             });
-        } finally {
-            try {
-                if (page) {
-                    await new Promise(resolve => setTimeout(resolve, 1000)); // 延遲關閉
-                    await page.close();
-                }
-            } catch (e) {
-                logToFile(`Close error: ${e.message}`);
-            }
         }
     });
 });
@@ -642,16 +295,6 @@ try {
 } catch (err) {
     logToFile(`Error: /tmp not writable: ${err.message}`);
 }
-
-// 清理全局瀏覽器
-process.on('SIGTERM', async () => {
-    if (globalBrowser) {
-        await globalBrowser.close();
-        globalBrowser = null;
-        logToFile('Global browser closed on SIGTERM');
-    }
-    process.exit(0);
-});
 
 app.listen(PORT, '0.0.0.0', () => {
     logToFile(`Server started at http://0.0.0.0:${PORT}`);

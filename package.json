@@ -6,12 +6,11 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "async": "^3.2.6",
+    "async": "^3.2.5",
     "axios": "^1.7.2",
     "cheerio": "^1.0.0",
     "cors": "^2.8.5",
     "express": "^4.19.2",
-    "iconv-lite": "^0.6.3",
     "puppeteer": "^23.0.0",
     "puppeteer-extra": "^3.3.6",
     "puppeteer-extra-plugin-stealth": "^2.11.2"
