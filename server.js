@@ -3,8 +3,8 @@ const axios = require('axios').create({ http2: true });
 const cheerio = require('cheerio');
 const cors = require('cors');
 const path = require('path');
-const fs = require('fs').promises; // 異步 fs
-const fsSync = require('fs'); // 同步 fs
+const fs = require('fs').promises;
+const fsSync = require('fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { queue } = require('async');
@@ -15,15 +15,15 @@ puppeteer.use(StealthPlugin());
 const app = express();
 const PORT = process.env.PORT || 10000;
 
-app.set('trust proxy', 1); // 信任單層代理（Render）
+app.set('trust proxy', 1);
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
 // 速率限制中間件（每分鐘 15 次）
 const limiter = rateLimit({
-    windowMs: 60 * 1000, // 1 分鐘
-    max: 15, // 每個 IP 最多 15 次
+    windowMs: 60 * 1000,
+    max: 15,
     message: { error: 'Too many requests, please try again later', suggestion: '請等待1分鐘後重試' }
 });
 app.use('/api/query-sim', limiter);
@@ -39,7 +39,7 @@ let sessionCookies = [];
 let lastLoginTime = 0;
 let isLoginInProgress = false;
 const errorCounts = new Map();
-const queryCache = new Map(); // 查詢結果緩存
+const queryCache = new Map();
 
 // 限制並發查詢
 const puppeteerQueue = queue(async (task, callback) => {
@@ -82,10 +82,10 @@ const cleanPuppeteerCache = async () => {
     }
 };
 
-// 創建瀏覽器（僅用於登錄）
+// 創建瀏覽器
 const createBrowser = async (retryCount = 0) => {
     await cleanPuppeteerCache();
-    await logToFile('Launching Puppeteer browser for login...');
+    await logToFile('Launching Puppeteer browser...');
     try {
         const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         if (!fsSync.existsSync(chromePath)) {
@@ -98,13 +98,7 @@ const createBrowser = async (retryCount = 0) => {
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-gpu',
-                '--single-process',
-                '--no-zygote',
-                '--disable-extensions',
-                '--disable-sync',
-                '--no-first-run'
+                '--disable-dev-shm-usage'
             ],
             timeout: 10000,
             executablePath: chromePath,
@@ -181,6 +175,63 @@ const login = async () => {
     }
 };
 
+// 模擬瀏覽器查詢（若 axios 失敗）
+const queryWithPuppeteer = async (iccid) => {
+    let browser, page;
+    try {
+        browser = await createBrowser();
+        page = await browser.newPage();
+        await page.setDefaultNavigationTimeout(10000);
+
+        await page.setCookie(...sessionCookies.map(c => ({
+            name: c.split('=')[0],
+            value: c.split('=')[1],
+            domain: 'api2021.multibyte.com',
+            path: '/crm'
+        })));
+
+        await logToFile(`Navigating to ${API_URL}?dat=${iccid} with Puppeteer`);
+        await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle0', timeout: 10000 });
+
+        await logToFile('Waiting for displayBill...');
+        await page.waitForSelector('#displayBill div div table', { timeout: 10000 });
+
+        const responseData = await page.content();
+        await logToFile(`Puppeteer response (first 1000 chars): ${responseData.substring(0, 1000)}`);
+        const $ = cheerio.load(responseData);
+
+        const extractText = (selector, defaultValue = 'N/A') => {
+            const text = $(selector).text().trim() || defaultValue;
+            logToFile(`Extracted "${selector}": ${text}`);
+            return text;
+        };
+
+        return {
+            iccid,
+            cardType: extractText('#displayBill div div table:nth-of-type(1) > tbody > tr:nth-child(2) > td:nth-child(1) > div'),
+            location: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(1) > div'),
+            status: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(3) > div'),
+            activationTime: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(4) > div'),
+            cancellationTime: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(5) > div'),
+            usageMB: extractText('#displayBill div div table:nth-of-type(3) > tbody > tr:nth-child(3) > td:nth-child(12) > div', '0'),
+            rawData: responseData.substring(0, 500)
+        };
+    } catch (error) {
+        await logToFile(`Puppeteer query failed: ${error.message}`);
+        throw error;
+    } finally {
+        try {
+            if (page) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                await page.close();
+            }
+            if (browser) await browser.close();
+        } catch (e) {
+            await logToFile(`Close error: ${e.message}`);
+        }
+    }
+};
+
 // 健康檢查端點
 app.get('/health', async (req, res) => {
     await logToFile('Health check requested');
@@ -237,13 +288,13 @@ app.post('/api/query-sim', async (req, res) => {
                             'Accept-Language': 'zh-TW,zh-CN;q=0.9',
                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
                         },
-                        timeout: 3000 // 縮短超時
+                        timeout: 3000
                     });
                     break;
                 } catch (err) {
                     if (err.response && err.response.status === 429) {
                         const retryAfter = err.response.headers['retry-after'];
-                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, retry) * 2000; // 指數退避
+                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : Math.pow(2, retry) * 2000;
                         await logToFile(`Rate limit hit, waiting ${waitTime}ms`);
                         await new Promise(resolve => setTimeout(resolve, waitTime));
                     } else if (retry === 2) {
@@ -286,6 +337,24 @@ app.post('/api/query-sim', async (req, res) => {
                 $ = cheerio.load(responseData);
             }
 
+            // 檢查 #displayBill 是否有數據
+            if (!$('#displayBill div div table').length) {
+                await logToFile('No data in #displayBill, falling back to Puppeteer...');
+                const result = await queryWithPuppeteer(iccid);
+                if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
+                    errorCounts.set(iccid, errorCount + 1);
+                    throw new Error('ICCID輸入錯誤');
+                }
+
+                // 緩存結果（有效期 8 小時）
+                queryCache.set(iccid, result);
+                setTimeout(() => queryCache.delete(iccid), 8 * 60 * 60 * 1000);
+                if (queryCache.size > 2000) queryCache.clear();
+
+                errorCounts.delete(iccid);
+                return res.json(result);
+            }
+
             const extractText = (selector, defaultValue = 'N/A') => {
                 const text = $(selector).text().trim() || defaultValue;
                 logToFile(`Extracted "${selector}": ${text}`);
@@ -304,8 +373,13 @@ app.post('/api/query-sim', async (req, res) => {
             };
 
             if (result.cardType === 'N/A' && result.location === 'N/A' && result.status === 'N/A') {
-                errorCounts.set(iccid, errorCount + 1);
-                throw new Error('ICCID輸入錯誤');
+                await logToFile('No valid data in axios response, falling back to Puppeteer...');
+                const puppeteerResult = await queryWithPuppeteer(iccid);
+                if (puppeteerResult.cardType === 'N/A' && puppeteerResult.location === 'N/A' && puppeteerResult.status === 'N/A') {
+                    errorCounts.set(iccid, errorCount + 1);
+                    throw new Error('ICCID輸入錯誤');
+                }
+                result = puppeteerResult;
             }
 
             // 緩存結果（有效期 8 小時）
