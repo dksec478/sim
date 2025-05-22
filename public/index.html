@@ -114,7 +114,7 @@
         <h1>SIM卡狀態查詢系統</h1>
         
         <div class="note">
-            <strong>注意：</strong>請輸入19-20位數字的ICCID號碼。查詢可能需要幾秒鐘時間。
+            <strong>注意：</strong>請輸入19-20位數字的ICCID號碼。查詢可能需要最多60秒。
         </div>
         
         <div class="input-group">
@@ -126,7 +126,7 @@
         <button onclick="resetForm()">重置</button>
         
         <div class="loading" id="loading">
-            <p>正在查詢中，請稍候...</p>
+            <p>正在查詢中，請稍候（可能需要60秒）...</p>
             <div id="progressBar" style="height: 4px; background: #e0e0e0; margin-top: 10px;">
                 <div id="progress" style="height: 100%; width: 0%; background: #4CAF50; transition: width 0.3s;"></div>
             </div>
@@ -191,10 +191,10 @@
                 if (width >= 100) {
                     clearInterval(interval);
                 } else {
-                    width += 10;
+                    width += 1.67; // 60 秒達到 100%
                     progressBar.style.width = width + '%';
                 }
-            }, 200);
+            }, 1000);
             return interval;
         }
 
@@ -239,7 +239,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(15000) // 縮短超時到 15 秒
+                    signal: AbortSignal.timeout(60000) // 延長超時到 60 秒
                 });
                 
                 const data = await response.json();
@@ -275,7 +275,7 @@
                 console.error('Fetch error:', err);
                 if (retryCount < maxRetries && err.message !== 'Timeout') {
                     console.log('Retrying query...');
-                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 5000); // 5 秒後重試
+                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 10000); // 10 秒後重試
                     return;
                 }
                 showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : 
@@ -305,7 +305,7 @@
             const successElement = document.getElementById('success');
             successElement.textContent = message;
             successElement.style.display = 'block';
-            errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            successElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
 
         // 重置表單
