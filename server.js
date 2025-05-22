@@ -37,6 +37,7 @@ const puppeteerQueue = queue(async (task, callback) => {
 const logToFile = (message) => {
     try {
         fs.appendFileSync('/tmp/server.log', `${new Date().toISOString()} - ${message}\n`);
+        console.log(message); // 同時輸出到控制台
     } catch (err) {
         console.error('Log error:', err.message);
     }
@@ -45,23 +46,17 @@ const logToFile = (message) => {
 // 驗證 ICCID
 const isValidICCID = (iccid) => /^[0-9]{19,20}$/.test(iccid);
 
-// 清理快取目錄並限制大小
+// 清理快取目錄
 const cleanPuppeteerCache = () => {
     const cacheDir = '/tmp/puppeteer_cache';
     try {
         if (fs.existsSync(cacheDir)) {
-            const stats = fs.statSync(cacheDir);
-            if (stats.size > 50 * 1024 * 1024) { // 限制 50MB
-                logToFile('Cache dir too large, cleaning...');
-                fs.rmSync(cacheDir, { recursive: true, force: true });
-            } else {
-                fs.rmSync(cacheDir, { recursive: true, force: true });
-            }
+            fs.rmSync(cacheDir, { recursive: true, force: true });
+            logToFile(`Cleaned ${cacheDir}`);
         }
         fs.mkdirSync(cacheDir, { recursive: true });
         logToFile(`Created ${cacheDir}`);
     } catch (err) {
-        console.error('Cache cleanup error:', err.message);
         logToFile(`Cache cleanup error: ${err.message}`);
     }
 };
@@ -69,8 +64,8 @@ const cleanPuppeteerCache = () => {
 // 創建瀏覽器
 const createBrowser = async (retryCount = 0) => {
     cleanPuppeteerCache();
+    logToFile('Launching Puppeteer browser...');
     try {
-        // 檢查 Chrome 可執行文件
         const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
         if (!fs.existsSync(chromePath)) {
             throw new Error(`Chrome not found at ${chromePath}`);
@@ -89,10 +84,9 @@ const createBrowser = async (retryCount = 0) => {
                 '--disable-extensions',
                 '--disable-sync',
                 '--no-first-run',
-                '--disable-background-networking',
-                '--disable-client-side-phishing-detection'
+                '--disable-background-networking'
             ],
-            timeout: 20000, // 縮短超時
+            timeout: 15000, // 縮短超時
             executablePath: chromePath,
             userDataDir: '/tmp/puppeteer_cache'
         });
@@ -116,12 +110,12 @@ const login = async (page, retryCount = 0) => {
     isLoginInProgress = true;
     try {
         logToFile(`Navigating to ${LOGIN_URL}`);
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 15000 });
         if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
 
-        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
-        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
-        await page.waitForFunction('document.activeElement !== null', { timeout: 30000 });
+        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 15000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 15000 });
+        await page.waitForFunction('document.activeElement !== null', { timeout: 15000 });
 
         logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 300 });
@@ -129,7 +123,7 @@ const login = async (page, retryCount = 0) => {
         await page.click('input[type="submit"]', { delay: 100 });
 
         logToFile('Waiting for navigation...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => logToFile('Navigation timeout'));
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 15000 }).catch(() => logToFile('Navigation timeout'));
 
         const cookies = await page.cookies();
         sessionCookies = cookies
@@ -165,7 +159,11 @@ const login = async (page, retryCount = 0) => {
 // 健康檢查端點
 app.get('/health', (req, res) => {
     logToFile('Health check requested');
-    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+    res.status(200).json({ 
+        status: 'ok', 
+        uptime: process.uptime(), 
+        memory: process.memoryUsage()
+    });
 });
 
 // 查詢端點
@@ -192,7 +190,7 @@ app.post('/api/query-sim', async (req, res) => {
         try {
             browser = await createBrowser();
             page = await browser.newPage();
-            await page.setDefaultNavigationTimeout(20000);
+            await page.setDefaultNavigationTimeout(15000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124');
             await page.setViewport({ width: 320, height: 240 });
 
@@ -216,7 +214,7 @@ app.post('/api/query-sim', async (req, res) => {
             }));
 
             logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
-            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 20000 });
+            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 15000 });
 
             if (response.status() === 500) {
                 errorCounts.set(iccid, errorCount + 1);
@@ -238,7 +236,7 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile('Waiting for displayBill...');
             await page.waitForFunction(
                 'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                { timeout: 20000 }
+                { timeout: 15000 }
             );
 
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -254,7 +252,7 @@ app.post('/api/query-sim', async (req, res) => {
                     return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
                 }));
 
-                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 20000 });
+                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 15000 });
                 if (reResponse.status() === 500) {
                     errorCounts.set(iccid, errorCount + 1);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
@@ -262,7 +260,7 @@ app.post('/api/query-sim', async (req, res) => {
 
                 await page.waitForFunction(
                     'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 20000 }
+                    { timeout: 15000 }
                 );
                 responseData = await page.content();
                 $ = cheerio.load(responseData);
@@ -331,4 +329,16 @@ app.post('/api/query-sim', async (req, res) => {
     });
 });
 
-app.listen(PORT, '0.0.0.0', () => logToFile(`Server started at http://0.0.0.0:${PORT}`));
+// 啟動前檢查
+try {
+    logToFile('Checking /tmp permissions...');
+    fs.accessSync('/tmp', fs.constants.W_OK);
+    logToFile('/tmp is writable');
+} catch (err) {
+    logToFile(`Error: /tmp not writable: ${err.message}`);
+}
+
+app.listen(PORT, '0.0.0.0', () => {
+    logToFile(`Server started at http://0.0.0.0:${PORT}`);
+    logToFile(`Memory usage: ${JSON.stringify(process.memoryUsage())}`);
+});

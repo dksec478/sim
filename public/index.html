@@ -207,11 +207,11 @@
             };
         }
 
-        async function querySimStatus() {
+        async function querySimStatus(retryCount = 0, maxRetries = 2) {
             const iccid = document.getElementById('iccid').value.trim();
             const queryButton = document.getElementById('queryButton');
             
-            console.log('Query button clicked, ICCID:', iccid);
+            console.log('Query button clicked, ICCID:', iccid, 'Retry:', retryCount);
             
             document.getElementById('error').style.display = 'none';
             document.getElementById('success').style.display = 'none';
@@ -239,7 +239,7 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({ iccid }),
-                    signal: AbortSignal.timeout(20000)
+                    signal: AbortSignal.timeout(15000) // 縮短超時到 15 秒
                 });
                 
                 const data = await response.json();
@@ -267,13 +267,19 @@
                     if (data.error && (data.error.includes('Invalid ICCID') || data.error.includes('No data found') || 
                         data.error.includes('HTTP Status 500') || data.error.includes('Too many failed attempts') || 
                         data.error.includes('Login failed') || data.error.includes('Server busy') || 
-                        data.error.includes('Server connection failed'))) {
+                        data.error.includes('Server unavailable'))) {
                         document.getElementById('iccid').value = '';
                     }
                 }
             } catch (err) {
                 console.error('Fetch error:', err);
-                showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : '無法連接到伺服器，請檢查網絡或等待10秒後重試'}</small>`);
+                if (retryCount < maxRetries && err.message !== 'Timeout') {
+                    console.log('Retrying query...');
+                    setTimeout(() => querySimStatus(retryCount + 1, maxRetries), 5000); // 5 秒後重試
+                    return;
+                }
+                showError(`查詢失敗<br><small>${err.message === 'Timeout' ? '伺服器響應超時，請等待10秒後重試' : 
+                    '無法連接到伺服器，請檢查網絡或等待10秒後重試'}</small>`);
                 document.getElementById('iccid').value = '';
             } finally {
                 clearInterval(progressInterval);
@@ -299,7 +305,7 @@
             const successElement = document.getElementById('success');
             successElement.textContent = message;
             successElement.style.display = 'block';
-            successElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            errorElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
         }
 
         // 重置表單
