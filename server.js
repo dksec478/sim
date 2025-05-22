@@ -7,6 +7,7 @@ const fs = require('fs');
 const puppeteer = require('puppeteer-extra');
 const StealthPlugin = require('puppeteer-extra-plugin-stealth');
 const { queue } = require('async');
+const rateLimit = require('express-rate-limit');
 
 puppeteer.use(StealthPlugin());
 
@@ -16,6 +17,14 @@ const PORT = process.env.PORT || 10000;
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
+
+// 速率限制中間件（每分鐘 5 次請求）
+const limiter = rateLimit({
+    windowMs: 60 * 1000, // 1 分鐘
+    max: 5, // 每個 IP 最多 5 次
+    message: { error: 'Too many requests, please try again later', suggestion: '請等待1分鐘後重試' }
+});
+app.use('/api/query-sim', limiter);
 
 // Configuration
 const BASE_URL = 'http://api2021.multibyte.com:57842';
@@ -28,6 +37,7 @@ let sessionCookies = [];
 let lastLoginTime = 0;
 let isLoginInProgress = false;
 const errorCounts = new Map();
+const queryCache = new Map(); // 查詢結果緩存
 
 // 限制並發查詢
 const puppeteerQueue = queue(async (task, callback) => {
@@ -150,7 +160,10 @@ const login = async () => {
         throw error;
     } finally {
         try {
-            if (page) await page.close();
+            if (page) {
+                await new Promise(resolve => setTimeout(resolve, 1000)); // 延遲關閉
+                await page.close();
+            }
             if (browser) await browser.close();
         } catch (e) {
             logToFile(`Close error: ${e.message}`);
@@ -187,6 +200,12 @@ app.post('/api/query-sim', async (req, res) => {
             return res.status(429).json({ error: 'Too many failed attempts', suggestion: 'Try a different ICCID or wait' });
         }
 
+        // 檢查緩存
+        if (queryCache.has(iccid)) {
+            logToFile(`Returning cached result for ICCID: ${iccid}`);
+            return res.json(queryCache.get(iccid));
+        }
+
         logToFile(`Querying ICCID: ${iccid}`);
         let responseData = '';
 
@@ -196,17 +215,32 @@ app.post('/api/query-sim', async (req, res) => {
             }
 
             logToFile(`Sending API request for ICCID: ${iccid}`);
-            const response = await axios.get(`${API_URL}?dat=${iccid}`, {
-                headers: {
-                    'Cookie': sessionCookies.join('; '),
-                    'Accept': 'text/html,*/*;q=0.8',
-                    'Accept-Language': 'zh-TW,zh-CN;q=0.9',
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
-                },
-                timeout: 10000
-            });
+            let response;
+            for (let retry = 0; retry < 2; retry++) {
+                try {
+                    response = await axios.get(`${API_URL}?dat=${iccid}`, {
+                        headers: {
+                            'Cookie': sessionCookies.join('; '),
+                            'Accept': 'text/html,*/*;q=0.8',
+                            'Accept-Language': 'zh-TW,zh-CN;q=0.9',
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124'
+                        },
+                        timeout: 10000
+                    });
+                    break;
+                } catch (err) {
+                    if (err.response && err.response.status === 429) {
+                        const retryAfter = err.response.headers['retry-after'];
+                        const waitTime = retryAfter ? parseInt(retryAfter, 10) * 1000 : 60000; // 默認 60 秒
+                        logToFile(`Rate limit hit, waiting ${waitTime}ms`);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
+                    } else if (retry === 1) {
+                        throw err;
+                    }
+                }
+            }
 
-            if (response.status !== 200) {
+            if (!response || response.status !== 200) {
                 errorCounts.set(iccid, errorCount + 1);
                 throw new Error('Invalid ICCID: Server cannot process this ICCID');
             }
@@ -218,7 +252,7 @@ app.post('/api/query-sim', async (req, res) => {
                 sessionCookies = [];
                 lastLoginTime = 0;
                 await login();
-                const retryResponse = await axios.get(`${API_URL}?dat=${iccid}`, {
+                response = await axios.get(`${API_URL}?dat=${iccid}`, {
                     headers: {
                         'Cookie': sessionCookies.join('; '),
                         'Accept': 'text/html,*/*;q=0.8',
@@ -227,11 +261,11 @@ app.post('/api/query-sim', async (req, res) => {
                     },
                     timeout: 10000
                 });
-                if (retryResponse.status !== 200) {
+                if (response.status !== 200) {
                     errorCounts.set(iccid, errorCount + 1);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
                 }
-                responseData = retryResponse.data;
+                responseData = response.data;
                 $ = cheerio.load(responseData);
             }
 
@@ -256,6 +290,10 @@ app.post('/api/query-sim', async (req, res) => {
                 errorCounts.set(iccid, errorCount + 1);
                 throw new Error('ICCID輸入錯誤');
             }
+
+            // 緩存結果（有效期 1 小時）
+            queryCache.set(iccid, result);
+            setTimeout(() => queryCache.delete(iccid), 60 * 60 * 1000);
 
             errorCounts.delete(iccid);
             res.json(result);
@@ -295,6 +333,16 @@ try {
 } catch (err) {
     logToFile(`Error: /tmp not writable: ${err.message}`);
 }
+
+// 預加載登錄
+(async () => {
+    try {
+        await login();
+        logToFile('Preloaded login successful');
+    } catch (err) {
+        logToFile(`Preload login failed: ${err.message}`);
+    }
+})();
 
 app.listen(PORT, '0.0.0.0', () => {
     logToFile(`Server started at http://0.0.0.0:${PORT}`);
