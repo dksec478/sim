@@ -70,6 +70,13 @@ const cleanPuppeteerCache = () => {
 const createBrowser = async (retryCount = 0) => {
     cleanPuppeteerCache();
     try {
+        // 檢查 Chrome 可執行文件
+        const chromePath = process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable';
+        if (!fs.existsSync(chromePath)) {
+            throw new Error(`Chrome not found at ${chromePath}`);
+        }
+        logToFile(`Using Chrome at ${chromePath}`);
+
         return await puppeteer.launch({
             headless: 'new',
             args: [
@@ -81,13 +88,16 @@ const createBrowser = async (retryCount = 0) => {
                 '--no-zygote',
                 '--disable-extensions',
                 '--disable-sync',
-                '--no-first-run'
+                '--no-first-run',
+                '--disable-background-networking',
+                '--disable-client-side-phishing-detection'
             ],
-            timeout: 30000,
-            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || '/usr/bin/google-chrome-stable',
+            timeout: 20000, // 縮短超時
+            executablePath: chromePath,
             userDataDir: '/tmp/puppeteer_cache'
         });
     } catch (err) {
+        logToFile(`Browser launch failed: ${err.message}`);
         if (retryCount < 1 && err.message.includes('SingletonLock')) {
             logToFile('Retrying browser launch...');
             return createBrowser(retryCount + 1);
@@ -106,12 +116,12 @@ const login = async (page, retryCount = 0) => {
     isLoginInProgress = true;
     try {
         logToFile(`Navigating to ${LOGIN_URL}`);
-        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 60000 });
+        const response = await page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30000 });
         if (!response.ok()) throw new Error(`Login page failed, status: ${response.status()}`);
 
-        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 60000 });
-        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 60000 });
-        await page.waitForFunction('document.activeElement !== null', { timeout: 60000 }); // 確保可交互
+        await page.waitForSelector('input[name="user_id"]', { visible: true, timeout: 30000 });
+        await page.waitForSelector('input[name="password"]', { visible: true, timeout: 30000 });
+        await page.waitForFunction('document.activeElement !== null', { timeout: 30000 });
 
         logToFile('Typing credentials...');
         await page.type('input[name="user_id"]', LOGIN_CREDENTIALS.username, { delay: 300 });
@@ -119,7 +129,7 @@ const login = async (page, retryCount = 0) => {
         await page.click('input[type="submit"]', { delay: 100 });
 
         logToFile('Waiting for navigation...');
-        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 60000 }).catch(() => logToFile('Navigation timeout'));
+        await page.waitForNavigation({ waitUntil: 'networkidle2', timeout: 30000 }).catch(() => logToFile('Navigation timeout'));
 
         const cookies = await page.cookies();
         sessionCookies = cookies
@@ -152,6 +162,12 @@ const login = async (page, retryCount = 0) => {
     }
 };
 
+// 健康檢查端點
+app.get('/health', (req, res) => {
+    logToFile('Health check requested');
+    res.status(200).json({ status: 'ok', uptime: process.uptime() });
+});
+
 // 查詢端點
 app.post('/api/query-sim', async (req, res) => {
     puppeteerQueue.push(async () => {
@@ -176,7 +192,7 @@ app.post('/api/query-sim', async (req, res) => {
         try {
             browser = await createBrowser();
             page = await browser.newPage();
-            await page.setDefaultNavigationTimeout(30000);
+            await page.setDefaultNavigationTimeout(20000);
             await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/91.0.4472.124');
             await page.setViewport({ width: 320, height: 240 });
 
@@ -189,7 +205,7 @@ app.post('/api/query-sim', async (req, res) => {
             page.on('close', () => logToFile('Page closed unexpectedly'));
             page.on('pageerror', err => logToFile(`Page error: ${err.message}`));
 
-            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) { // 25 分鐘重置會話
+            if (!sessionCookies.length || Date.now() - lastLoginTime > 25 * 60 * 1000) {
                 await login(page);
             }
 
@@ -200,7 +216,7 @@ app.post('/api/query-sim', async (req, res) => {
             }));
 
             logToFile(`Navigating to: ${API_URL}?dat=${iccid}`);
-            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 30000 });
+            const response = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 20000 });
 
             if (response.status() === 500) {
                 errorCounts.set(iccid, errorCount + 1);
@@ -222,7 +238,7 @@ app.post('/api/query-sim', async (req, res) => {
             logToFile('Waiting for displayBill...');
             await page.waitForFunction(
                 'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                { timeout: 30000 }
+                { timeout: 20000 }
             );
 
             await new Promise(resolve => setTimeout(resolve, 2000));
@@ -238,7 +254,7 @@ app.post('/api/query-sim', async (req, res) => {
                     return { name, value, domain: 'api2021.multibyte.com', path: '/crm' };
                 }));
 
-                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 30000 });
+                const reResponse = await page.goto(`${API_URL}?dat=${iccid}`, { waitUntil: 'networkidle2', timeout: 20000 });
                 if (reResponse.status() === 500) {
                     errorCounts.set(iccid, errorCount + 1);
                     throw new Error('Invalid ICCID: Server cannot process this ICCID');
@@ -246,7 +262,7 @@ app.post('/api/query-sim', async (req, res) => {
 
                 await page.waitForFunction(
                     'document.querySelector("#displayBill div div table:nth-of-type(3) tbody tr:nth-child(3) td:nth-child(1)")',
-                    { timeout: 30000 }
+                    { timeout: 20000 }
                 );
                 responseData = await page.content();
                 $ = cheerio.load(responseData);
@@ -296,7 +312,7 @@ app.post('/api/query-sim', async (req, res) => {
 
             res.status(statusCode).json({ 
                 error: error.message.includes('Target closed') || error.message.includes('Connection closed') ? 
-                      'Server connection failed' : error.message,
+                      'Server unavailable' : error.message,
                 suggestion,
                 details: error.stack
             });
